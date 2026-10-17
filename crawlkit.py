@@ -205,24 +205,31 @@ FACT_COLS = [("run_id", "VARCHAR"), ("place_id", "VARCHAR"), ("name", "VARCHAR")
              ("error", "VARCHAR"), ("fetched_at", "TIMESTAMP")]
 
 
+REFRESH_S = 300   # the other machine may have written newer results to the bucket
+
+
 def local_table(name: str) -> Path | None:
-    """scraped/<name>.parquet, fetched from the bucket first if only it has it
-    (a fresh server disk)."""
+    """scraped/<name>.parquet, refreshed from the bucket when the local copy is
+    missing (a fresh server disk) or older than REFRESH_S. Every local write
+    is uploaded at once, so the bucket is never behind this machine."""
     f = OUT / f"{name}.parquet"
-    if f.exists():
-        return f
-    if gcs.enabled():
-        con = gcs._scratch(timeout_s=20)
-        try:
-            con.execute(f"COPY (SELECT * FROM read_parquet({_q(gcs.url(f'{name}.parquet', PREFIX))})) "
-                        f"TO {_q(f)} (FORMAT PARQUET)")
-            return f
-        except Exception as e:  # noqa: BLE001
-            if not gcs.not_found(e):
-                raise
-        finally:
-            con.close()
-    return None
+    fresh = f.exists() and time.time() - f.stat().st_mtime < REFRESH_S
+    if fresh or not gcs.enabled():
+        return f if f.exists() else None
+    OUT.mkdir(exist_ok=True)      # a fresh server disk has no scraped/ yet
+    tmp = OUT / f"{name}.dl.parquet"
+    con = gcs._scratch(timeout_s=20)
+    try:
+        con.execute(f"COPY (SELECT * FROM read_parquet({_q(gcs.url(f'{name}.parquet', PREFIX))})) "
+                    f"TO {_q(tmp)} (FORMAT PARQUET)")
+        tmp.replace(f)
+    except Exception as e:  # noqa: BLE001 — keep a local copy if there is one
+        if not (gcs.not_found(e) or f.exists()):
+            raise
+    finally:
+        con.close()
+        tmp.unlink(missing_ok=True)
+    return f if f.exists() else None
 
 
 def upsert(name: str, cols: list[tuple], rows: list[list], key: list[str]) -> int:
@@ -260,6 +267,7 @@ def query(sql: str, params=None) -> list[tuple]:
     public SQL box's connection."""
     import duckdb
     c = duckdb.connect()
+    c.execute("SET enable_progress_bar=false")
     try:
         if DB.exists():
             c.execute(f"ATTACH {_q(DB)} AS q (READ_ONLY)")

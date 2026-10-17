@@ -98,6 +98,7 @@ def _scratch(timeout_s: int | None = None):
     something any table here relies on, so it is not preserved."""
     import duckdb
     con = duckdb.connect()
+    con.execute("SET enable_progress_bar=false")
     con.execute("SET memory_limit='1GB'")
     con.execute("SET preserve_insertion_order=false")
     con.execute(f"SET temp_directory={_lit(Path(tempfile.gettempdir()) / 'queenslab-duckdb')}")
