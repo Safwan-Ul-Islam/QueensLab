@@ -1221,8 +1221,8 @@ def _crawl_collector():
     while True:
         _time.sleep(120)
         try:
-            if os.environ.get("FIRECRAWL_API_KEY"):
-                ck = _ck()
+            ck = _ck()
+            if ck.has_key():
                 if any(not r.get("collected_at") for r in ck.runs()):
                     ck.refresh()
         except Exception as e:  # noqa: BLE001

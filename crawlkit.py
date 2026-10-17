@@ -465,11 +465,19 @@ class FirecrawlError(Exception):
     pass
 
 
+KEY_NAMES = ("FIRECRAWL_API_KEY", "FC", "fc")   # the user named it "fc" on Render
+
+
+def has_key() -> bool:
+    return any(os.environ.get(n) for n in KEY_NAMES)
+
+
 def _key() -> str:
-    k = os.environ.get("FIRECRAWL_API_KEY")
+    k = next((os.environ[n] for n in KEY_NAMES if os.environ.get(n)), None)
     if not k:
-        raise FirecrawlError("FIRECRAWL_API_KEY is not set (QueensLab/.env, or Render's Environment tab)")
-    return k
+        raise FirecrawlError("the Firecrawl key is not set (FIRECRAWL_API_KEY or fc — "
+                             "QueensLab/.env, or Render's Environment tab)")
+    return k.strip()
 
 
 def _api(method: str, path: str, body=None, timeout: int = 60):
