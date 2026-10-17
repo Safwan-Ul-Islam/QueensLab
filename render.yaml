@@ -1,0 +1,14 @@
+# Its own Render service. Nothing here touches BizGenome — no shared database,
+# no shared repo, no shared environment.
+services:
+  - type: web
+    name: queenslab
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # ⚠️ DELIBERATELY NO DATABASE_URL. This service must never be able to
+      # reach BizGenome's Neon database. Its only store is a local DuckDB file.

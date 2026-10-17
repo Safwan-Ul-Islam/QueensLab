@@ -1,0 +1,5 @@
+raw/
+queens.duckdb
+*.duckdb.wal
+__pycache__/
+.venv/
