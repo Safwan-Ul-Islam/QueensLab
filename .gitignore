@@ -6,3 +6,18 @@ __pycache__/
 .env
 raw/*.parts/
 raw/*.partial
+# Too big for git (100 MB cap; and the repo would grow on every refresh).
+# These live only in the bucket, and the page reads them in place. The rest of
+# raw/ is the fallback if the bucket is ever unreachable.
+raw/pluto.parquet
+raw/dob_permits.parquet
+raw/dob_now.parquet
+raw/nyc_311.parquet
+raw/subway_ridership.parquet
+# The collection-job store (this machine only; mirrored to the bucket).
+jobs.sqlite
+jobs.sqlite-*
+# A stable id for this machine in the collection table (jobs.host()).
+.machine_id
+# DuckDB leaves this if killed mid-COPY; rebuild_from_parquet skips it too.
+raw/tmp_*

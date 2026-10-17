@@ -14,9 +14,20 @@
   "fetched_at": "2026-10-17T06:39:19+00:00",
   "rows": 13555
  },
+ "dob_now": {
+  "fetched_at": "2026-10-17T11:32:49+00:00",
+  "rows": 198081
+ },
+ "dob_permits": {
+  "fetched_at": "2026-10-17T12:24:36+00:00",
+  "rows": 841308
+ },
+ "dof_sales": {
+  "fetched_at": "2026-10-17T11:14:12+00:00",
+  "rows": 26602
+ },
  "dohmh_food": {
-  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
-  "fetched_at": "2026-10-17T06:40:41+00:00",
+  "fetched_at": "2026-10-17T11:16:03+00:00",
   "rows": 74524
  },
  "nta_population": {
@@ -28,10 +39,21 @@
   "fetched_at": "2026-10-17T10:39:33+00:00",
   "rows": 82
  },
+ "nyc_311": {
+  "fetched_at": "2026-10-17T11:41:31+00:00",
+  "rows": 1869933
+ },
+ "nys_retail_food": {
+  "fetched_at": "2026-10-17T11:13:13+00:00",
+  "rows": 2489
+ },
  "pluto": {
-  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
-  "fetched_at": "2026-10-17T06:56:37+00:00",
+  "fetched_at": "2026-10-17T11:47:25+00:00",
   "rows": 324483
+ },
+ "sidewalk_cafes": {
+  "fetched_at": "2026-10-17T11:08:31+00:00",
+  "rows": 324
  },
  "sla_liquor": {
   "dated_from": "file mtime on the fetching machine",
@@ -39,8 +61,15 @@
   "rows": null
  },
  "storefront_vacancy": {
-  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
-  "fetched_at": "2026-10-17T06:58:38+00:00",
-  "rows": 103305
+  "fetched_at": "2026-10-17T11:09:34+00:00",
+  "rows": 47278
+ },
+ "subway_ridership": {
+  "fetched_at": "2026-10-17T11:23:40+00:00",
+  "rows": 1171471
+ },
+ "tract_nta": {
+  "fetched_at": "2026-10-17T16:50:33+00:00",
+  "rows": 725
  }
 }

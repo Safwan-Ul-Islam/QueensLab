@@ -20,7 +20,10 @@ import http.client
 import io
 import json
 import shutil
+import signal
 import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -34,12 +37,33 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import sources as S  # noqa: E402
 import gcs  # noqa: E402
+import jobs  # noqa: E402
 
 RAW = HERE / "raw"
+DERIVED = HERE / "derived"      # built from the sources (nta_profile.py), not pulled
 DB = HERE / "queens.duckdb"
 PAGE = 20_000                      # small enough for Render's 512MB free plan
 WORKERS = 3                        # months pulled at once by pull_windows (laptop only)
 UA = {"User-Agent": "BizGenome-research/1.0 (analysis only; not served)"}
+
+
+_retries = 0
+_retries_lock = threading.Lock()
+# Set when a run is being stopped: month-window threads quit at their next page
+# instead of finishing every remaining month first.
+_stop = threading.Event()
+_current = None            # the job this process is working on, for live retry counts
+
+
+def _count_retry() -> None:
+    global _retries
+    with _retries_lock:
+        _retries += 1
+    if _current is not None:
+        try:
+            _current.retried()
+        except Exception:  # noqa: BLE001 — a missed count must not break a pull
+            pass
 
 
 def _get(url: str, timeout: int = 180) -> list[dict]:
@@ -60,6 +84,7 @@ def _get(url: str, timeout: int = 180) -> list[dict]:
                 raise
             reason = type(e).__name__
         wait = 2 ** (attempt + 1)
+        _count_retry()
         print(f"      retry {attempt+1}/5 in {wait}s ({reason})", flush=True)
         time.sleep(wait)
     return []
@@ -69,10 +94,11 @@ def _order(src: S.Source) -> str:
     """A TOTAL order, so offset paging never repeats or skips a row.
 
     ⚠️ Ordering by a column with ties (camis, borough_block_lot) let tied rows
-    come back in a different order on the next page request. storefront_vacancy
-    arrived with 18,547 exact duplicate rows — and as many real rows missing,
-    since the total still matched — and dohmh_food with 74 (found 2026-10-17).
-    `:id` breaks every tie; an aggregate is already unique on its group."""
+    come back in a different order on the next page request, so some arrived
+    twice and as many never arrived (the total still matched): 2,682 in
+    storefront_vacancy's raw pull, 15 in dohmh_food (found 2026-10-17). The
+    city's files also hold genuinely identical rows — 15,865 and 59 — and
+    those are kept. `:id` breaks every tie; an aggregate is unique on its group."""
     if src.group:
         return src.group
     return f"{src.order_by}, :id" if src.order_by else ":id"
@@ -88,11 +114,13 @@ def _where(src: S.Source, override: str | None = None) -> str | None:
 
 
 def _pages(src: S.Source, where: str | None, fh, cap: int | None = None,
-           quiet: bool = False) -> int:
+           quiet: bool = False, job=None) -> int:
     """Offset-page one query into an open NDJSON file. Peak memory is one page."""
     base = f"https://{src.domain}/resource/{src.dataset}.json"
     total, offset = 0, 0
     while True:
+        if _stop.is_set():
+            raise RuntimeError("stopped — the run is being interrupted")
         params = {"$limit": PAGE, "$offset": offset, "$order": _order(src)}
         if where:
             params["$where"] = where
@@ -109,6 +137,8 @@ def _pages(src: S.Source, where: str | None, fh, cap: int | None = None,
             fh.write(json.dumps({k: (json.dumps(v) if isinstance(v, (dict, list)) else v)
                                  for k, v in r.items()}) + "\n")
         total += got
+        if job and got:
+            job.add_rows(got)
         if not quiet:
             print(f"      {total:>9,} rows", end="\r", flush=True)
         del batch                      # release the page before the next request
@@ -123,7 +153,7 @@ def _pages(src: S.Source, where: str | None, fh, cap: int | None = None,
 
 
 def pull_to_file(src: S.Source, path: Path, where_override: str | None = None,
-                 cap: int | None = None) -> int:
+                 cap: int | None = None, job=None) -> int:
     """Page through one dataset, writing each page straight to NDJSON.
 
     ⚠️ Earlier this accumulated every row in a list and only then wrote it.
@@ -132,7 +162,7 @@ def pull_to_file(src: S.Source, path: Path, where_override: str | None = None,
     vanished with no error. Peak memory is now one page, not one dataset.
     """
     with path.open("w", encoding="utf-8") as fh:
-        return _pages(src, _where(src, where_override), fh, cap)
+        return _pages(src, _where(src, where_override), fh, cap, job=job)
 
 
 def _months(since: str):
@@ -144,7 +174,7 @@ def _months(since: str):
         start = end
 
 
-def pull_windows(src: S.Source, parts: Path) -> int:
+def pull_windows(src: S.Source, parts: Path, job=None) -> int:
     """Pull a big time-series source one calendar month at a time.
 
     Two years of Queens 311 is 1.87M rows. As one query that means paging to
@@ -165,13 +195,16 @@ def pull_windows(src: S.Source, parts: Path) -> int:
         out = parts / f"{start:%Y-%m}.jsonl"
         if out.exists() and start != newest and out.stat().st_mtime > recent:
             with out.open(encoding="utf-8") as fh:
-                return start, sum(1 for _ in fh), None, True
+                kept = sum(1 for _ in fh)
+            if job:
+                job.add_rows(kept)
+            return start, kept, None, True
         bound = (f"{src.window_by} >= '{start:%Y-%m-%dT%H:%M:%S}' AND "
                  f"{src.window_by} < '{end:%Y-%m-%dT%H:%M:%S}'")
         where = f"({src.where}) AND {bound}" if src.where else bound
         tmp = out.with_suffix(".partial")
         with tmp.open("w", encoding="utf-8") as fh:
-            n = _pages(src, where, fh, quiet=True)
+            n = _pages(src, where, fh, quiet=True, job=job)
         tmp.replace(out)
         api = None
         if not src.group:   # completeness check; an aggregate has no cheap count
@@ -180,12 +213,21 @@ def pull_windows(src: S.Source, parts: Path) -> int:
         return start, n, api, False
 
     total = 0
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    # Not a `with` block: on Ctrl-C its exit would wait for EVERY queued month.
+    pool = ThreadPoolExecutor(max_workers=WORKERS)
+    try:
         for start, n, api, kept in pool.map(one, wins):
             total += n
+            if job and api not in (None, n):
+                job.warn(f"{start:%Y-%m}: pulled {n:,}, the API counts {api:,}")
             flag = ("  (kept from the last run)" if kept else
                     "" if api in (None, n) else f"  ⚠ api says {api:,}")
             print(f"      {start:%Y-%m}{n:>10,} rows{flag}   total {total:,}", flush=True)
+    except BaseException:
+        _stop.set()                    # running months stop at their next page
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
     return total
 
 
@@ -199,42 +241,63 @@ def rows_to_file(rows: list[dict], path: Path) -> int:
     return len(rows)
 
 
-def save(key: str, tmp: Path, n_rows: int) -> Path:
-    """NDJSON on disk -> DuckDB table -> Parquet. DuckDB does all of it.
+def save(key: str, tmp: Path, n_rows: int, job=None) -> Path:
+    """NDJSON on disk -> DuckDB table -> Parquet -> the bucket.
 
     pyarrow is deliberately NOT a dependency: the copy in the user's anaconda
     env is compiled against NumPy 1.x and fails under NumPy 2.x. DuckDB reads
     JSON and writes Parquet itself, so that whole class of breakage is gone.
+
+    The database's write lock is held for the local load ONLY. It used to be
+    held through the upload too, and every page request in that window found
+    the database locked and showed nothing.
     """
     path = RAW / f"{key}.parquet"
+    if job:
+        job.step("saving")
+    fetched = _utc_now()
     con = _connect_rw()
-    # sample_size=-1 reads every row to learn the columns. Socrata leaves a
-    # field OUT of a row when it is empty, and DuckDB's default looks at only
-    # the first 20,480 rows, so a column first seen later is never created.
-    # PLUTO (324k rows) came back with 93 of the dataset's 108 columns.
-    con.execute(
-        f'CREATE OR REPLACE TABLE "{key}" AS '
-        "SELECT * FROM read_json_auto(?, union_by_name=true, sample_size=-1, "
-        "maximum_object_size=20000000)",
-        [str(tmp / "*.jsonl") if tmp.is_dir() else str(tmp)])
-    con.execute(f'COPY "{key}" TO ? (FORMAT PARQUET, COMPRESSION ZSTD)', [str(path)])
-    con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
-                   (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
-    con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
-    con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
-                [key, n_rows, _utc_now(), path.stat().st_size])
-    if gcs.enabled():
-        try:
-            gcs.attach(con)
-            dest = gcs.push_table(con, key)
-            gcs.push_log(con)
-            print(f"\n    -> {dest}", end="")
-        except Exception as e:  # noqa: BLE001 — the local copy is already safe
-            print(f"\n    ⚠ bucket push failed, local copy kept: {type(e).__name__}: {str(e)[:120]}",
-                  end="")
-    con.close()
+    try:
+        # sample_size=-1 reads every row to learn the columns. Socrata leaves a
+        # field OUT of a row when it is empty, and DuckDB's default looks at only
+        # the first 20,480 rows, so a column first seen later is never created.
+        # In PLUTO that was zonedist4, set on just 4 Queens lots (found
+        # 2026-10-17). Its other 14 absent columns are empty for every Queens
+        # lot, so the API never sends them; no scan can bring those back.
+        con.execute(
+            f'CREATE OR REPLACE TABLE "{key}" AS '
+            "SELECT * FROM read_json_auto(?, union_by_name=true, sample_size=-1, "
+            "maximum_object_size=20000000)",
+            [str(tmp / "*.jsonl") if tmp.is_dir() else str(tmp)])
+        con.execute(f'COPY "{key}" TO ? (FORMAT PARQUET, COMPRESSION ZSTD)', [str(path)])
+        con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
+                       (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
+        con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
+        con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
+                    [key, n_rows, fetched, path.stat().st_size])
+    finally:
+        con.close()                    # the lock goes before any network traffic
     _discard(tmp)
     _manifest_put(key, n_rows)
+    if not gcs.enabled():
+        if job:
+            job.upload("off", "no bucket configured")
+        return path
+    if job:
+        job.step("uploading")
+    try:
+        dest = gcs.upload(path, f"{key}.parquet")
+        gcs.put_log([(key, n_rows, fetched, path.stat().st_size)])
+        print(f"\n    -> {dest}", end="")
+        if job:
+            job.upload("uploaded", dest)
+    except Exception as e:  # noqa: BLE001 — the local copy is already safe
+        if _interrupted(e):
+            raise
+        print(f"\n    ⚠ bucket upload failed, local copy kept: {type(e).__name__}: {str(e)[:120]}",
+              end="")
+        if job:
+            job.upload("failed", f"{type(e).__name__}: {e}")
     return path
 
 
@@ -245,8 +308,8 @@ def _discard(tmp: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _connect_rw():
-    """Open the database for writing, waiting out another writer.
+def _connect(read_only: bool = False):
+    """Open the database, waiting out another process's write lock.
 
     DuckDB allows one writer per file. With a big source pulling in one shell
     and the rest in another, the second save now waits its turn (up to 20 min)
@@ -254,12 +317,20 @@ def _connect_rw():
     import duckdb
     for _ in range(240):
         try:
-            return duckdb.connect(str(DB))
+            return duckdb.connect(str(DB), read_only=read_only)
         except duckdb.IOException as e:
             if "lock" not in str(e).lower():
                 raise
             time.sleep(5)
-    return duckdb.connect(str(DB))
+    return duckdb.connect(str(DB), read_only=read_only)
+
+
+def _connect_rw():
+    return _connect(read_only=False)
+
+
+def _q(s) -> str:
+    return "'" + str(s).replace("'", "''") + "'"
 
 
 MANIFEST = RAW / "_manifest.json"
@@ -296,19 +367,23 @@ def _manifest_put(key: str, n_rows: int) -> None:
 def rebuild_from_parquet(db: Path = DB) -> int:
     """Recreate the DuckDB file from the committed Parquet in raw/.
 
-    This is what makes storage work on Render's free plan. The disk is wiped
-    on every restart, but raw/*.parquet is IN THE REPO (~19 MB), so each boot
-    rebuilds every table in about five seconds. Refreshing the data means:
-    fetch locally, commit raw/, push — Render redeploys with it.
+    Since 2026-10-17 this is the FALLBACK, used only if the bucket cannot be
+    read. The small tables' Parquet is in the repo; the five big ones are
+    gitignored and live only in the bucket, so a fallback boot has no 311,
+    permits, PLUTO or subway — and the page says where its data came from.
     """
     import duckdb
     m = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     con = duckdb.connect(str(db))
     con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
                    (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
+    for f in sorted(DERIVED.glob("*.parquet")):    # the neighbourhood profile
+        con.execute(f'CREATE OR REPLACE TABLE "{f.stem}" AS SELECT * FROM read_parquet(?)', [str(f)])
     total = 0
     for f in sorted(RAW.glob("*.parquet")):
         key = f.stem
+        if key.startswith(("_", "tmp_")):         # a crash mid-COPY leaves tmp_<key>.parquet
+            continue
         con.execute(f'CREATE OR REPLACE TABLE "{key}" AS SELECT * FROM read_parquet(?)', [str(f)])
         n = con.execute(f'SELECT count(*) FROM "{key}"').fetchone()[0]
         con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
@@ -341,20 +416,23 @@ def rebuild_from_gcs(db: Path = DB) -> int:
         tables = gcs.list_tables(con)
         if not tables:
             raise RuntimeError(f"no tables under gs://{gcs.bucket()}/{gcs.PREFIX}/")
-        # The log first: its row and byte counts decide copy or view.
         try:
-            con.execute("CREATE OR REPLACE TABLE _fetch_log AS SELECT * FROM read_parquet(?)",
-                        [gcs.url("_fetch_log.parquet")])
+            log = gcs.read_log(con)
         except Exception:  # noqa: BLE001 — tables without dates beat no tables
-            con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
-                           (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
-        size = {k: (r or 0, b or 0) for k, r, b in
-                con.execute("SELECT key, rows, bytes FROM _fetch_log").fetchall()}
+            log = {}
+        con.execute("""CREATE OR REPLACE TABLE _fetch_log
+                       (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
         total = 0
         for key in tables:
             src = gcs.url(f"{key}.parquet")
-            rows, nbytes = size.get(key, (0, 0))
-            if rows > LAZY_ROWS or nbytes > LAZY_BYTES:
+            # Size from the file's OWN footer (one small read), not the log: a
+            # lost log entry once meant "unknown size", which meant copying a
+            # 1.9M-row table into a 512 MB server on every wake-up.
+            rows = con.execute("SELECT sum(num_rows) FROM parquet_file_metadata(?)",
+                               [src]).fetchone()[0] or 0
+            _, fetched_at, nbytes = log.get(key, (rows, None, None))
+            con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)", [key, rows, fetched_at, nbytes])
+            if rows > LAZY_ROWS or (nbytes or 0) > LAZY_BYTES:
                 lit = src.replace("'", "''")
                 con.execute(f'CREATE OR REPLACE VIEW "{key}" AS '
                             f"SELECT * FROM read_parquet('{lit}')")
@@ -362,32 +440,135 @@ def rebuild_from_gcs(db: Path = DB) -> int:
                 con.execute(f'CREATE OR REPLACE TABLE "{key}" AS SELECT * FROM read_parquet(?)',
                             [src])
             total += con.execute(f'SELECT count(*) FROM "{key}"').fetchone()[0]
+        # Derived tables (the neighbourhood profile) are small: always copied.
+        try:
+            for key in gcs.list_tables(con, prefix=gcs.DERIVED):
+                con.execute(f'CREATE OR REPLACE TABLE "{key}" AS SELECT * FROM read_parquet(?)',
+                            [gcs.url(f"{key}.parquet", gcs.DERIVED)])
+        except Exception as e:  # noqa: BLE001 — sources without the profile beat nothing
+            if not gcs.not_found(e):
+                print(f"[queenslab] derived tables not loaded: {type(e).__name__}", flush=True)
         return total
     finally:
         con.close()
 
 
 def push_all() -> int:
-    """Upload every table already in the local database to the bucket."""
-    import duckdb
+    """Upload every table already pulled to the bucket — one job per table, so
+    the collection table shows exactly which ones made it."""
     if not gcs.enabled():
         print("  GCS not configured — set GCS_BUCKET, GCS_HMAC_KEY_ID, GCS_HMAC_SECRET in .env")
         return 1
-    con = duckdb.connect(str(DB))
+    scratch = Path(tempfile.mkdtemp(prefix="queenslab-push-"))
+    con = _connect(read_only=True)
     try:
-        gcs.attach(con)
-        keys = [r[0] for r in con.execute("SELECT key FROM _fetch_log ORDER BY rows").fetchall()]
-        for k in keys:
-            t0 = time.time()
-            dest = gcs.push_table(con, k)
-            n = con.execute(f'SELECT count(*) FROM "{k}"').fetchone()[0]
-            print(f"  {k:<20}{n:>10,} rows -> {dest}  ({time.time()-t0:.1f}s)")
-        gcs.push_log(con)
-        print(f"  _fetch_log -> {gcs.url('_fetch_log.parquet')}")
-        print(f"\n  bucket now holds {len(gcs.list_tables(con))} tables")
-        return 0
+        gcs.attach(con)       # a database rebuilt from the bucket holds views over gs://
+        log = con.execute("SELECT key, rows, fetched_at, bytes FROM _fetch_log ORDER BY rows").fetchall()
+        # The database is the truth. A Parquet file in raw/ is uploaded only if
+        # its own row count matches the table's; otherwise (a stale checkout, a
+        # half-written file, none at all) the table is exported fresh first.
+        for key, rows, *_ in log:
+            f = RAW / f"{key}.parquet"
+            ok = False
+            if f.exists():
+                try:
+                    ok = con.execute("SELECT sum(num_rows) FROM parquet_file_metadata(?)",
+                                     [str(f)]).fetchone()[0] == rows
+                except Exception:  # noqa: BLE001 — unreadable file: export instead
+                    ok = False
+            if not ok:
+                con.execute(f'COPY "{key}" TO {_q(scratch / f"{key}.parquet")} '
+                            "(FORMAT PARQUET, COMPRESSION ZSTD)")
     finally:
         con.close()
+    jobs.reap_dead()
+    run = jobs.new_run()
+    ids = {key: jobs.queue(key, run, "upload") for key, *_ in log}
+    jobs.mirror(force=True)
+    jobs.heartbeat_forever()
+    signal.signal(signal.SIGTERM, _on_term)
+    failed = 0
+    try:
+        for key, rows, fetched_at, nbytes in log:
+            job = jobs.Job(ids[key]).start(step="uploading")
+            local = scratch / f"{key}.parquet"
+            local = local if local.exists() else RAW / f"{key}.parquet"
+            t0 = time.time()
+            try:
+                dest = gcs.upload(local, f"{key}.parquet")
+                gcs.put_log([(key, rows, fetched_at, nbytes)])
+            except Exception as e:  # noqa: BLE001 — report it, try the next table
+                if _interrupted(e):
+                    raise KeyboardInterrupt from e
+                failed += 1
+                job.upload("failed", f"{type(e).__name__}: {e}")
+                job.fail(f"upload failed — {type(e).__name__}: {e}")
+                print(f"  {key:<20} FAILED: {type(e).__name__}: {str(e)[:120]}")
+                continue
+            job.upload("uploaded", dest)
+            job.succeed(rows)
+            print(f"  {key:<20}{rows:>10,} rows -> {dest}  ({time.time()-t0:.1f}s)")
+    except (KeyboardInterrupt, SystemExit):
+        jobs.close_run(run, "interrupted before this upload finished")
+        jobs.mirror(force=True)
+        raise
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    con = gcs._scratch()
+    try:
+        print(f"\n  bucket now holds {len(gcs.list_tables(con))} tables"
+              + (f" · {failed} upload(s) FAILED" if failed else ""))
+    finally:
+        con.close()
+    return 1 if failed else 0
+
+
+def _interrupted(e: BaseException) -> bool:
+    """Was this exception really Ctrl-C or SIGTERM? Inside a DuckDB call an
+    interrupt surfaces as InterruptException or as RuntimeError('Query
+    interrupted') caused by the KeyboardInterrupt/SystemExit. Treated as an
+    ordinary failure, the run carried on and then hung forever on the next
+    duckdb.connect (review, 2026-10-17)."""
+    if isinstance(e, (KeyboardInterrupt, SystemExit)) or type(e).__name__ == "InterruptException":
+        return True
+    if isinstance(e.__cause__ or e.__context__, (KeyboardInterrupt, SystemExit)):
+        return True
+    return "query interrupted" in str(e).lower()
+
+
+def _on_term(signum, frame):
+    """SIGTERM ends a run the same way Ctrl-C does: recorded, not silent."""
+    raise SystemExit(128 + signum)
+
+
+def _note_retries(job, before: int) -> None:
+    n = _retries - before
+    if n:
+        job.warn(f"{n} request{'s' if n > 1 else ''} retried — the source was busy")
+
+
+def print_jobs() -> int:
+    """The collection table, in the terminal."""
+    rows = jobs.listing(40)
+    if not rows:
+        print("\n  no collection jobs yet\n")
+        return 0
+
+    def t(iso):
+        return (iso or "")[5:16].replace("T", " ")
+    print(f"\n  {'source':<20}{'state':<22}{'rows':>11}  {'started':<12}{'last activity':<14}"
+          f"{'finished':<12}{'bucket':<9} where")
+    print("  " + "-" * 112)
+    for j in rows:
+        state = j["state"] + (f" · {j['step']}" if j.get("step") and j["state"] == "running" else "")
+        print(f"  {j['source']:<20}{state:<22}{j.get('rows_downloaded') or 0:>11,}  "
+              f"{t(j.get('started')):<12}{t(j.get('last_activity')):<14}{t(j.get('finished')):<12}"
+              f"{(j.get('gcs') or ''):<9} {j.get('host')} · {j.get('origin')}")
+        for label, k in (("↳", "error"), ("⚠", "warnings")):
+            if j.get(k):
+                print(f"  {'':<20}{label} {j[k][:150]}")
+    print(f"\n  times are UTC · this machine is {jobs.host()}\n")
+    return 0
 
 
 # Restored 2026-10-17: the streaming rewrite (d985008) deleted these while
@@ -467,13 +648,22 @@ def pull_cbp() -> list[dict]:
     """Queens rows from the 2023 County Business Patterns county file."""
     url = "https://www2.census.gov/programs-surveys/cbp/datasets/2023/cbp23co.zip"
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        blob = resp.read()
-    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-        name = next(n for n in archive.namelist() if n.endswith(".txt"))
-        text = archive.read(name).decode("latin1")
+    # Spooled to a temp file and read line by line: holding the archive AND
+    # its decoded text took ~600 MB, more than the free server has (review,
+    # 2026-10-17). The source is also tagged laptop-only now.
+    with tempfile.TemporaryFile() as blob:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            shutil.copyfileobj(resp, blob)
+        blob.seek(0)
+        with zipfile.ZipFile(blob) as archive:
+            name = next(n for n in archive.namelist() if n.endswith(".txt"))
+            with archive.open(name) as raw:
+                return _cbp_rows(io.TextIOWrapper(raw, encoding="latin1", newline=""))
+
+
+def _cbp_rows(text) -> list[dict]:
     rows = []
-    for rec in csv.DictReader(io.StringIO(text)):
+    for rec in csv.DictReader(text):
         if rec.get("fipstate") != "36" or rec.get("fipscty") != "081":
             continue
         naics = rec.get("naics") or ""
@@ -516,12 +706,19 @@ def main() -> int:
     ap.add_argument("--core", action="store_true")
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--force", action="store_true", help="refetch even if already pulled")
-    ap.add_argument("--cap", type=int, help="stop each source after N rows (for a quick trial)")
-    ap.add_argument("--where", help="override the WHERE for --only (e.g. a date bound)")
+    ap.add_argument("--cap", type=int,
+                    help="TRIAL: stop each source after N rows; saved as <key>__trial, never uploaded")
+    ap.add_argument("--where",
+                    help="TRIAL: override the WHERE for --only; saved as <key>__trial, never uploaded")
     ap.add_argument("--push", action="store_true",
                     help="upload every local table to the GCS bucket, then exit")
+    ap.add_argument("--jobs", action="store_true",
+                    help="show recent collection jobs (all machines), then exit")
+    ap.add_argument("--run", help=argparse.SUPPRESS)   # set by the web app: claim its queued jobs
     a = ap.parse_args()
 
+    if a.jobs:
+        return print_jobs()
     if a.push:
         return push_all()
 
@@ -534,7 +731,7 @@ def main() -> int:
             n = f"{s.probed:,}" if s.probed else "—"
             print(f"  {s.key:<20}{n:>18}  {s.label}{mark}")
         print(f"\n  core = {', '.join(s.key for s in S.core())}")
-        print("  python research/fetch.py --core        start here\n")
+        print("  python fetch.py --core        start here\n")
         return 0
 
     if a.only:
@@ -546,43 +743,113 @@ def main() -> int:
         picked = S.core() if a.core else S.ALL
 
     print(f"\n  pulling {len(picked)} source(s) -> {DB.name}\n")
-    total = 0
+    jobs.reap_dead()                   # close anything an earlier run left hanging
+    total, todo = 0, []
     for s in picked:
         got = already(s.key)
         if got and not a.force:
             print(f"  = {s.label:<40} have {got[0]:,} from {got[1]} (--force to refetch)")
             total += got[0]
             continue
+        todo.append(s)
+    # Every source of the run is queued up front, so the page shows the queue.
+    run = a.run or jobs.new_run()
+    origin = "trial" if (a.where or a.cap) else "web" if a.run else "cli"
+    ids = {s.key: jobs.claim(s.key, run, origin) for s in todo}
+    if todo:
+        jobs.mirror(force=True)
+        jobs.heartbeat_forever()
+    signal.signal(signal.SIGTERM, _on_term)
+    global _current
+    failed = 0
+    trial = bool(a.where or a.cap)
+    if trial:
+        print("  TRIAL (--where/--cap): each source is saved as <key>__trial in the local\n"
+              "  database only. The real table, its Parquet and the bucket are untouched.\n")
+    for s in todo:
+        job = jobs.Job(ids[s.key])
+        before = _retries
+        _stop.clear()          # a previous source's failure must not stop this one
         print(f"  > {s.label}")
         t0 = time.time()
         RAW.mkdir(parents=True, exist_ok=True)
         # --where / --cap are quick trials: one plain query, not month windows.
-        windowed = bool(s.window_by) and not (a.where or a.cap)
+        windowed = bool(s.window_by) and not trial
         tmp = RAW / (f"{s.key}.parts" if windowed else f"{s.key}.jsonl")
         try:
+            job.start()
+            _current = job
             if s.kind == "acs":
                 n = rows_to_file(pull_acs(), tmp)
+                job.add_rows(n)
             elif s.kind == "cbp":
                 n = rows_to_file(pull_cbp(), tmp)
+                job.add_rows(n)
             elif windowed:
-                n = pull_windows(s, tmp)
+                n = pull_windows(s, tmp, job=job)
             else:
                 # Socrata STREAMS to disk — never hold a whole dataset in RAM.
                 n = pull_to_file(s, tmp, where_override=a.where if a.only else None,
-                                 cap=a.cap)
+                                 cap=a.cap, job=job)
+            if not n:
+                _discard(tmp)
+                raise RuntimeError("the source returned no rows")
+            if trial:
+                p = save_trial(s.key, tmp, job)
+            else:
+                p = save(s.key, tmp, n, job=job)
+        except (KeyboardInterrupt, SystemExit) as e:
+            _note_retries(job, before)
+            job.fail("interrupted (Ctrl-C)" if isinstance(e, KeyboardInterrupt)
+                     else f"stopped (exit {e.code})")
+            jobs.cancel_run(run, "cancelled — the run was stopped before this started")
+            jobs.mirror(force=True)
+            if tmp.is_file():
+                tmp.unlink()
+            raise
         except Exception as e:  # noqa: BLE001 — one dead source must not stop the run
+            if _interrupted(e):    # Ctrl-C/SIGTERM that surfaced through DuckDB: END the run
+                job.fail("interrupted (Ctrl-C or stop signal)")
+                jobs.cancel_run(run, "cancelled — the run was stopped before this started")
+                jobs.mirror(force=True)
+                raise KeyboardInterrupt from e
             print(f"\n    FAILED: {type(e).__name__}: {str(e)[:160]}\n")
             if tmp.is_file():   # a windowed pull keeps its finished months for the rerun
                 tmp.unlink()
+            _note_retries(job, before)
+            job.fail(f"{type(e).__name__}: {e}")
+            failed += 1
             continue
-        if not n:
-            print("    nothing returned\n"); _discard(tmp); continue
-        p = save(s.key, tmp, n)
+        finally:
+            _current = None
+        _note_retries(job, before)
+        job.succeed(n)
         total += n
-        print(f"\n    {n:,} rows · {p.stat().st_size/1e6:.1f} MB · {time.time()-t0:.0f}s"
-              f" -> table \"{s.key}\"\n")
-    print(f"  done — {total:,} rows in {DB}\n")
-    return 0
+        size = f"{p.stat().st_size/1e6:.1f} MB · " if isinstance(p, Path) else ""
+        print(f"\n    {n:,} rows · {size}{time.time()-t0:.0f}s"
+              f" -> table \"{p if isinstance(p, str) else s.key}\"\n")
+    print(f"  done — {total:,} rows in {DB}"
+          + (f" · {failed} source(s) FAILED — see python fetch.py --jobs" if failed else "") + "\n")
+    return 1 if failed else 0
+
+
+def save_trial(key: str, tmp: Path, job) -> str:
+    """A --where/--cap trial: loaded as <key>__trial for a look in DuckDB, and
+    nothing else. It used to REPLACE the real table, locally and in the
+    bucket, and be recorded as a normal successful pull (review, 2026-10-17)."""
+    name = f"{key}__trial"
+    job.step("saving")
+    con = _connect_rw()
+    try:
+        con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_json_auto(?, '
+                    "union_by_name=true, sample_size=-1, maximum_object_size=20000000)",
+                    [str(tmp / "*.jsonl") if tmp.is_dir() else str(tmp)])
+    finally:
+        con.close()
+    _discard(tmp)
+    job.upload("off", f"trial only: kept locally as table {name}")
+    job.warn(f"trial — the real table was not touched; this is table {name}")
+    return name
 
 
 if __name__ == "__main__":

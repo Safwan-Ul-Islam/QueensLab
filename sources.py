@@ -93,9 +93,10 @@ PROPERTY = [
            "data.cityofnewyork.us", "ipu4-2q9a",
            where="borough='QUEENS'", probed=841_308,
            order_by="job__", tags=("property", "local"),
-           note="Big. Build-outs and renovations = businesses opening. Exact match on "
-                "borough, not upper(): the values are already upper case, and upper() "
-                "stops Socrata using its index."),
+           note="The OLD filing system (BIS): history from 1989, still issuing, but most "
+                "new permits moved to DOB NOW (17k here in 2021, 1.2k so far in 2026). "
+                "Read both. Dates come in two formats (YYYY-MM-DD and MM/DD/YYYY). "
+                "Exact match on borough: upper() stops Socrata using its index."),
 
     Source("dob_now", "DOB NOW build permits",
            "data.cityofnewyork.us", "rbx6-tga4",
@@ -123,6 +124,14 @@ GEOGRAPHY = [
            note="82 NTAs in the 2020 scheme (QN0101…). ⚠️ DCWP licences and "
                 "nta_population use the 2010 scheme (QN61, QN01) — the codes do NOT "
                 "join across. Use nta_population.nta_name for names alongside DCWP."),
+
+    Source("tract_nta", "2020 census tract to NTA equivalency",
+           "data.cityofnewyork.us", "hm78-6dwm",
+           where="boroname='Queens'", probed=725,
+           order_by="geoid", tags=("geo",),
+           note="The city's own table of which 2020 tract sits in which 2020 NTA. Tracts "
+                "nest exactly, so ACS tract figures add up to current NTA populations — "
+                "nta_population is 2010 counts on 2010 codes. Used by nta_profile.py."),
 
     Source("nta_population", "Population by NTA",
            "data.cityofnewyork.us", "swpk-hqdp",
@@ -166,7 +175,7 @@ CENSUS = [
 
     Source("cbp_industry", "County Business Patterns 2023",
            "www2.census.gov", "cbp23co",
-           kind="cbp", tags=("business",),
+           kind="cbp", tags=("business", "local"),
            note="Queens County only (state 36, county 081). Establishments and jobs "
                 "by industry. County totals, not a list of shop names."),
 ]

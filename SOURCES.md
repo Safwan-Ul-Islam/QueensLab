@@ -15,14 +15,14 @@ Row counts marked **probed** were returned by the live API on 2026-10-17.
 | ✅ **NYS retail food stores** | [`9a8c-vfzj`](https://data.ny.gov/resource/9a8c-vfzj.json) | **2,489** | Bodegas, groceries, delis. |
 | ✅ **PLUTO tax lots** | [`64uk-42ks`](https://data.cityofnewyork.us/resource/64uk-42ks.json) | **324,483** | Land use, floor area, year built, commercial sqft. |
 | ✅ **DOF rolling sales** | [`usep-8jbt`](https://data.cityofnewyork.us/resource/usep-8jbt.json) | **26,602** | Real transaction prices (borough = `4`). |
-| ✅ **DOB permits** | [`ipu4-2q9a`](https://data.cityofnewyork.us/resource/ipu4-2q9a.json) | **841,298** | Build-outs = businesses opening. |
+| ✅ **DOB permits** | [`ipu4-2q9a`](https://data.cityofnewyork.us/resource/ipu4-2q9a.json) | **841,308** | Build-outs = businesses opening. |
 | ✅ **DOB NOW permits** | [`rbx6-tga4`](https://data.cityofnewyork.us/resource/rbx6-tga4.json) | **198,081** | The newer filing system. |
 | ✅ **2020 NTAs** | [`9nt8-h7nd`](https://data.cityofnewyork.us/resource/9nt8-h7nd.json) | **82** | The right unit for neighbourhood analysis. |
-| ✅ **Storefront vacancy** | [`92iy-9c3n`](https://data.cityofnewyork.us/resource/92iy-9c3n.json) | **~47,000** buildings × year | Empty storefronts. Kept per building, because the file has no unit id. |
+| ✅ **Storefront vacancy** | [`92iy-9c3n`](https://data.cityofnewyork.us/resource/92iy-9c3n.json) | **47,278** buildings × year | Empty storefronts. Kept per building, because the file has no unit id. |
 | ✅ **Population by NTA** | [`swpk-hqdp`](https://data.cityofnewyork.us/resource/swpk-hqdp.json) | **116** | Denominator for every per-capita figure. |
-| ✅ **311 complaints** | [`erm2-nwe9`](https://data.cityofnewyork.us/resource/erm2-nwe9.json) | **237,854** /90d | ⚠️ **Must** be date-bounded or it times out. |
-| ✅ **Sidewalk cafes** | [`qcdj-rwhu`](https://data.cityofnewyork.us/resource/qcdj-rwhu.json) | — | No borough column; filter by ZIP after load. |
-| ✅ **Subway ridership** | [`wujg-7c2s`](https://data.ny.gov/resource/wujg-7c2s.json) | citywide | Huge. Bound the date, filter to Queens stations. |
+| ✅ **311 complaints** | [`erm2-nwe9`](https://data.cityofnewyork.us/resource/erm2-nwe9.json) | **1,869,933** since Oct 2024 | ⚠️ **Must** be date-bounded or it times out. Pulled one month at a time. |
+| ✅ **Sidewalk cafes** | [`qcdj-rwhu`](https://data.cityofnewyork.us/resource/qcdj-rwhu.json) | **324** (whole file) | No borough column; filter by ZIP after load. |
+| ✅ **Subway ridership** | [`5wq4-mkjj`](https://data.ny.gov/resource/5wq4-mkjj.json) | **1,171,471** station-hours, 79 stations | 2025 onward, summed per station per hour at the source. The 2020–24 file is [`wujg-7c2s`](https://data.ny.gov/resource/wujg-7c2s.json). |
 
 **Browse for more:** [NYC Open Data](https://opendata.cityofnewyork.us/) · [NY State Open Data](https://data.ny.gov/) ·
 Search the catalog: `https://api.us.socrata.com/api/catalog/v1?domains=data.cityofnewyork.us&q=YOUR+TERM`
