@@ -10,15 +10,18 @@
   "rows": null
  },
  "dcwp_licences": {
-  "fetched_at": "2026-10-17T12:39:19+00:00",
+  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
+  "fetched_at": "2026-10-17T06:39:19+00:00",
   "rows": 13555
  },
  "dohmh_food": {
-  "fetched_at": "2026-10-17T12:40:41+00:00",
+  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
+  "fetched_at": "2026-10-17T06:40:41+00:00",
   "rows": 74524
  },
  "nta_population": {
-  "fetched_at": "2026-10-17T12:58:46+00:00",
+  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
+  "fetched_at": "2026-10-17T06:58:46+00:00",
   "rows": 116
  },
  "ntas": {
@@ -26,7 +29,8 @@
   "rows": 82
  },
  "pluto": {
-  "fetched_at": "2026-10-17T12:56:37+00:00",
+  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
+  "fetched_at": "2026-10-17T06:56:37+00:00",
   "rows": 324483
  },
  "sla_liquor": {
@@ -35,7 +39,8 @@
   "rows": null
  },
  "storefront_vacancy": {
-  "fetched_at": "2026-10-17T12:58:38+00:00",
+  "corrected": "2026-10-17: was stored in Asia/Dhaka time but labelled UTC; -6h applied",
+  "fetched_at": "2026-10-17T06:58:38+00:00",
   "rows": 103305
  }
 }

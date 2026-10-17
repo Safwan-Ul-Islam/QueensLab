@@ -277,7 +277,7 @@ def home(sql: str = "", result: str = ""):
         <span>sources loaded</span></div>
       <div class="stat"><b>{total:,}</b><span>Queens rows</span></div>
       <div class="stat"><b>82</b><span>neighbourhoods</span></div>
-      <div class="stat"><b>{html.escape(last or "—")}</b><span>last fetched</span></div>
+      <div class="stat"><b>{html.escape(last or "—")}</b><span>last fetched (UTC)</span></div>
     </div>"""
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">

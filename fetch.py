@@ -122,7 +122,7 @@ def save(key: str, tmp: Path, n_rows: int) -> Path:
                    (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
     con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
     con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
-                [key, n_rows, datetime.now(timezone.utc), path.stat().st_size])
+                [key, n_rows, _utc_now(), path.stat().st_size])
     if gcs.enabled():
         try:
             gcs.attach(con)
@@ -139,6 +139,28 @@ def save(key: str, tmp: Path, n_rows: int) -> Path:
 
 
 MANIFEST = RAW / "_manifest.json"
+
+
+def _utc_now() -> datetime:
+    """Naive UTC, on purpose.
+
+    Handing DuckDB a timezone-AWARE datetime makes it convert to the session
+    time zone — the machine's local zone — before storing in a TIMESTAMP. On a
+    Mac in Asia/Dhaka that silently stored every fetch time 6 hours ahead,
+    while Render (UTC) stored the truth, so the same column held two clocks.
+    Found 2026-10-17 when a live refresh appeared to happen 6h in the past."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _as_utc_naive(iso: str | None):
+    """Manifest strings carry an offset; normalise in Python, not in DuckDB's
+    cast, so the result never depends on the session time zone."""
+    if not iso:
+        return None
+    t = datetime.fromisoformat(iso)
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone.utc).replace(tzinfo=None)
+    return t
 
 
 def _manifest_put(key: str, n_rows: int) -> None:
@@ -167,7 +189,8 @@ def rebuild_from_parquet(db: Path = DB) -> int:
         n = con.execute(f'SELECT count(*) FROM "{key}"').fetchone()[0]
         con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
         con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
-                    [key, n, (m.get(key) or {}).get("fetched_at"), f.stat().st_size])
+                    [key, n, _as_utc_naive((m.get(key) or {}).get("fetched_at")),
+                     f.stat().st_size])
         total += n
     con.close()
     return total
