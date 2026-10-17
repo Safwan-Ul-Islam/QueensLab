@@ -47,6 +47,9 @@ STALE = 300           # active but silent this long = presumed dead
 MIRROR_EVERY = 60     # bucket writes driven by heartbeats alone, at most this often
 REMOTE_TTL = 20       # seconds other machines' jobs stay cached
 ACTIVE = ("queued", "running")
+# A job whose work happens elsewhere (a Firecrawl batch): no local process
+# beats for it, so silence and a dead pid prove nothing. Its collector closes it.
+REMOTE_STEP = "running at Firecrawl"
 
 # Fixed types, so nothing is ever guessed — a guessed timestamp is how a time
 # zone crept into the fetch log once already (BizGenome log, 2026-10-17).
@@ -346,8 +349,9 @@ def reap_dead() -> int:
     me = os.getpid()
     with closing(_db()) as c:
         rows = c.execute("""SELECT id, pid, last_activity FROM jobs
-                            WHERE host=? AND status IN ('queued','running')""",
-                         [host()]).fetchall()
+                            WHERE host=? AND status IN ('queued','running')
+                              AND coalesce(step, '') <> ?""",
+                         [host(), REMOTE_STEP]).fetchall()
     n = 0
     for r in rows:
         if r["pid"] == me:
@@ -479,7 +483,8 @@ def listing(limit: int = 30) -> list[dict]:
     out = []
     for j in (active + rest)[:max(limit, len(active))]:
         j["state"] = j.get("status") or "unknown"
-        if j["state"] in ACTIVE and (age(j.get("last_activity")) or 0) > STALE:
+        if (j["state"] in ACTIVE and j.get("step") != REMOTE_STEP
+                and (age(j.get("last_activity")) or 0) > STALE):
             j["state"] = "stalled"
         out.append(j)
     return out
@@ -527,8 +532,9 @@ def on_boot() -> None:
         if empty and gcs.enabled():
             _restore()
             if os.environ.get("RENDER"):
-                _close_active("1=1", [], "the server restarted while this was running "
-                                         "(idle sleep, a deploy, or running out of memory)",
+                _close_active("coalesce(step, '') <> ?", [REMOTE_STEP],
+                              "the server restarted while this was running "
+                              "(idle sleep, a deploy, or running out of memory)",
                               at_last_sign=True)
         reap_dead()
     except Exception as e:  # noqa: BLE001 — never block the page from booting

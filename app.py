@@ -295,6 +295,19 @@ td.l,th.l{text-align:left}
 .defs summary{cursor:pointer;font-weight:600}
 .defs ul{padding-left:18px}
 .defs li{margin:5px 0}
+.panel{margin-top:14px;border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.panel summary{cursor:pointer;font-weight:650}
+.panel h3{font-size:14px;margin:20px 0 8px}
+.pnl-login,.pnl-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}
+.panel input,.panel select{font:13px 'Inter',sans-serif;padding:7px 9px;border:1px solid #dde2ea;border-radius:8px}
+.panel input[type=number]{width:90px}
+.panel button{margin-top:0;padding:8px 16px;font-size:13px}
+.panel button.ghost{background:#fff;color:var(--ink);border:1px solid #dde2ea}
+.panel label{font-size:13px;color:var(--muted)}
+.panel .blk{display:block}
+.cfg input,.cfg select{width:100%}
+.cfg td{padding:4px 6px 4px 0}
+#crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
 .busy{background:#fff8e6;border:1px solid #f3dfae;color:#7a5200;border-radius:11px;
  padding:12px 16px;margin:26px 0 0;font-size:14px}
 .empty{background:var(--soft);border:1px dashed #dde2ea;border-radius:11px;padding:20px;
@@ -522,6 +535,119 @@ NB_JS = """<script>
 </script>"""
 
 
+CRAWL_JS = """<script>
+/* The website check + Firecrawl panel. Everything scraped is untrusted text:
+   it is only ever set with textContent, never as HTML. */
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var token = '';
+  try { token = localStorage.getItem('ql_token') || ''; } catch (e) {}
+  function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+  function api(method, path, body) {
+    var o = {method: method, headers: {'X-Fetch-Token': token}};
+    if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
+    return fetch(path, o).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); });
+  }
+  function msg(t) { $('crawl-msg').textContent = t || ''; }
+  function stat(box, value, label) { var d = el('div', null, 'stat'); d.appendChild(el('b', value)); d.appendChild(el('span', label)); box.appendChild(d); }
+
+  // public overview
+  fetch('/api/crawl/overview').then(function (r) { return r.json(); }).then(function (o) {
+    var box = $('crawl-overview'); box.textContent = ''; box.className = 'stats';
+    var c = o.site_checks || {};
+    var n = function (k) { return (c[k] || 0).toLocaleString(); };
+    stat(box, (o.sites_checked || 0).toLocaleString(), 'business sites checked');
+    stat(box, ((c.alive || 0) + (c.alive_js || 0) + (c.blocked || 0)).toLocaleString(), 'alive');
+    stat(box, n('dead'), 'dead — domain gone');
+    stat(box, ((c.parked || 0) + (c.hijacked || 0)).toLocaleString(), 'parked or hijacked by spam');
+    stat(box, n('platform'), 'not their own site');
+    stat(box, (o.with_facts || 0).toLocaleString(), 'read by Firecrawl');
+    var ul = $('crawl-canpull').querySelector('ul');
+    (o.can_pull || []).forEach(function (p) { var li = el('li'); li.appendChild(el('b', p[0])); li.appendChild(document.createTextNode(' — ' + p[1])); ul.appendChild(li); });
+  }).catch(function () { $('crawl-overview').textContent = 'Not available right now.'; });
+
+  var cfg = null, per = {structured: 5, text: 1};
+  function fieldRow(f) {
+    var tr = el('tr');
+    var name = el('input'); name.value = f.name || ''; name.placeholder = 'field_name';
+    var type = el('select'); ['text', 'number', 'yes/no', 'list'].forEach(function (t) { var o = el('option', t); o.value = t; if (t === f.type) o.selected = true; type.appendChild(o); });
+    var desc = el('input'); desc.value = f.description || ''; desc.placeholder = 'Describe exactly what to find';
+    var del = el('button', '×', 'ghost'); del.type = 'button'; del.onclick = function () { tr.remove(); };
+    [name, type, desc, del].forEach(function (x) { var td = el('td'); td.appendChild(x); tr.appendChild(td); });
+    $('cfg-fields').appendChild(tr);
+  }
+  function estimate() {
+    var m = $('cfg-mode').value, k = parseInt($('crawl-limit').value || '0', 10);
+    $('crawl-estimate').textContent = '≈ ' + (k * per[m]).toLocaleString() + ' credits';
+  }
+  function load() {
+    msg('Loading…');
+    return api('GET', '/api/crawl/admin').then(function (d) {
+      $('crawl-admin').hidden = false; msg('');
+      try { localStorage.setItem('ql_token', token); } catch (e) {}
+      per = d.credits_per_page || per; cfg = d.config;
+      var s = $('crawl-stats'); s.textContent = '';
+      stat(s, d.credits && d.credits.remaining != null ? d.credits.remaining.toLocaleString() : '—', 'Firecrawl credits left');
+      stat(s, (d.crawlable_sites || 0).toLocaleString(), 'alive sites to read');
+      stat(s, d.credits && d.credits.period_end ? d.credits.period_end.slice(0, 10) : '—', 'credits renew');
+      var runs = $('crawl-runs'); runs.textContent = '';
+      (d.runs || []).slice().reverse().slice(0, 5).forEach(function (r) {
+        runs.appendChild(el('div', r.started.slice(0, 16).replace('T', ' ') + ' UTC · ' + r.n + ' sites · ' + r.mode + ' · ' +
+          (r.status || '') + ' ' + (r.completed || 0) + '/' + r.n + ' · ' + (r.credits_used || 0) + ' credits' +
+          (r.collected_at ? ' · collected' : (r.expires_at ? ' · results kept until ' + r.expires_at.slice(0, 16).replace('T', ' ') : '')), 'muted'));
+      });
+      $('cfg-mode').value = cfg.mode; $('cfg-prompt').value = cfg.prompt;
+      $('cfg-recrawl').value = cfg.recrawl_days; $('cfg-conf').value = cfg.filters.min_confidence;
+      $('cfg-blocked').checked = !!cfg.include_blocked;
+      $('cfg-cats').value = (cfg.filters.categories || []).join(', '); $('cfg-ntas').value = (cfg.filters.ntas || []).join(', ');
+      $('cfg-fields').textContent = ''; cfg.fields.forEach(fieldRow);
+      $('crawl-limit').value = cfg.default_batch; estimate();
+      var res = d.results || {columns: [], rows: []}, box = $('crawl-results'); box.textContent = '';
+      if (!res.rows.length) { box.appendChild(el('div', 'No results yet.', 'empty')); return; }
+      var t = el('table'), hr = el('tr'); res.columns.forEach(function (c) { hr.appendChild(el('th', c.replace(/_/g, ' '), 'l')); });
+      var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
+      res.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
+      t.appendChild(tb); box.appendChild(t);
+    }).catch(function (e) { msg(e.message); });
+  }
+  function act(p, method, path, body, done) {
+    msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); }).catch(function (e) { msg(e.message); });
+  }
+  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); };
+  if (token) { $('crawl-token').value = token; }
+  $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate;
+  $('crawl-start').onclick = function () {
+    var k = parseInt($('crawl-limit').value, 10);
+    if (!confirm('Send ' + k + ' sites to Firecrawl? ' + $('crawl-estimate').textContent + '.')) return;
+    act('Starting…', 'POST', '/api/crawl/start', {limit: k}, 'Started — Firecrawl is working. Results are collected automatically.');
+  };
+  $('crawl-stop').onclick = function () { if (confirm('Stop the run? What it finished is kept.')) act('Stopping…', 'POST', '/api/crawl/stop'); };
+  $('crawl-collect').onclick = function () { act('Checking Firecrawl…', 'POST', '/api/crawl/collect'); };
+  $('check-start').onclick = function () { act('Starting the check…', 'POST', '/api/crawl/check', {limit: parseInt($('check-limit').value, 10)}, 'Checking — see Collection below.'); };
+  $('cfg-add').onclick = function () { fieldRow({type: 'text'}); };
+  $('cfg-save').onclick = function () {
+    var fields = [];
+    Array.prototype.forEach.call($('cfg-fields').rows, function (tr) {
+      var i = tr.querySelectorAll('input,select');
+      if (i[0].value.trim()) fields.push({name: i[0].value, type: i[1].value, description: i[2].value});
+    });
+    var split = function (v) { return v.split(',').map(function (x) { return x.trim(); }).filter(Boolean); };
+    act('Saving…', 'POST', '/api/crawl/config', {mode: $('cfg-mode').value, prompt: $('cfg-prompt').value, fields: fields,
+      recrawl_days: parseInt($('cfg-recrawl').value, 10), default_batch: parseInt($('crawl-limit').value, 10),
+      include_blocked: $('cfg-blocked').checked,
+      filters: {categories: split($('cfg-cats').value), ntas: split($('cfg-ntas').value), min_confidence: parseFloat($('cfg-conf').value)}}, 'Saved.');
+  };
+  $('crawl-csv').onclick = function (ev) {
+    ev.preventDefault();
+    fetch('/api/crawl/results.csv', {headers: {'X-Fetch-Token': token}}).then(function (r) {
+      if (!r.ok) throw new Error('not allowed'); return r.blob(); }).then(function (b) {
+      var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'queens_web_facts.csv'; a.click();
+    }).catch(function (e) { msg(e.message); });
+  };
+})();
+</script>"""
+
+
 def table_html(cols, rows) -> str:
     if not rows:
         return '<div class="empty">No rows.</div>'
@@ -624,6 +750,7 @@ def render(sql: str = "", result: str = "") -> str:
     <a href="#findings">Findings</a>
     <a href="#neighbourhoods">Neighbourhoods</a>
     <a href="#sources">Sources</a>
+    <a href="#websites">Websites</a>
     <a href="#collection">Collection</a>
     <a href="#query">Query</a>
     <a href="/api/status">API</a>
@@ -654,6 +781,60 @@ def render(sql: str = "", result: str = "") -> str:
       the results reach this page through the bucket.</p>
   </section>
 
+  <section id="websites">
+    <h2>Business websites</h2>
+    <p class="note">Every Queens business that lists a website, checked for free: still alive, dead
+      (domain gone — often a closure), parked or for sale, taken over by spam, or really a platform
+      page. Then <b>Firecrawl</b> reads the alive ones for the facts set in the requirements.
+      Research only — kept apart from the public records.</p>
+    <div id="crawl-overview" class="empty">Loading…</div>
+    <details class="defs" id="crawl-canpull"><summary>What the scraper can pull</summary><ul></ul></details>
+    <details class="panel" id="crawl-panel"><summary>Control panel</summary>
+      <div class="pnl-login">
+        <input id="crawl-token" type="password" placeholder="Password (FETCH_TOKEN)" autocomplete="current-password">
+        <button type="button" id="crawl-unlock">Unlock</button>
+        <span class="muted" id="crawl-msg"></span>
+      </div>
+      <div id="crawl-admin" hidden>
+        <div class="stats" id="crawl-stats"></div>
+        <h3>Run</h3>
+        <div class="pnl-row">
+          <label>Sites <input id="crawl-limit" type="number" min="1" max="1000" value="50"></label>
+          <span id="crawl-estimate" class="muted"></span>
+          <button type="button" id="crawl-start">Start</button>
+          <button type="button" id="crawl-stop" class="ghost">Stop</button>
+          <button type="button" id="crawl-collect" class="ghost">Collect now</button>
+        </div>
+        <div id="crawl-runs"></div>
+        <h3>Free website check</h3>
+        <div class="pnl-row">
+          <label>Sites <input id="check-limit" type="number" min="1" max="50000" value="2000"></label>
+          <button type="button" id="check-start" class="ghost">Check now</button>
+          <span class="muted">Re-checks sites not checked in 30 days. Progress shows in Collection.</span>
+        </div>
+        <h3>Requirements — what to extract</h3>
+        <div class="pnl-row">
+          <label>Mode <select id="cfg-mode"><option value="structured">Structured facts (5 credits/page)</option>
+            <option value="text">Page text only (1 credit/page)</option></select></label>
+          <label>Re-read after <input id="cfg-recrawl" type="number" min="1" max="365"> days</label>
+          <label>Min. confidence <input id="cfg-conf" type="number" min="0" max="1" step="0.05"></label>
+          <label><input id="cfg-blocked" type="checkbox"> also try sites with a bot wall (often fail, still cost)</label>
+        </div>
+        <label class="blk">Instructions to the extractor<textarea id="cfg-prompt" rows="2"></textarea></label>
+        <table class="cfg"><thead><tr><th class="l">Field</th><th class="l">Type</th>
+          <th class="l">What to find</th><th></th></tr></thead><tbody id="cfg-fields"></tbody></table>
+        <div class="pnl-row">
+          <button type="button" id="cfg-add" class="ghost">+ Add a field</button>
+          <label>Only categories <input id="cfg-cats" placeholder="e.g. restaurant, casual_eatery"></label>
+          <label>Only neighbourhoods <input id="cfg-ntas" placeholder="e.g. QN0702, QN2501"></label>
+          <button type="button" id="cfg-save">Save requirements</button>
+        </div>
+        <h3>Latest results <a href="#" id="crawl-csv">download CSV</a></h3>
+        <div class="scroll" id="crawl-results"></div>
+      </div>
+    </details>
+  </section>
+
   <section id="collection">
     <h2>Collection</h2>
     <p class="note">Every pull and every upload, newest first — from this server and from any
@@ -679,6 +860,7 @@ def render(sql: str = "", result: str = "") -> str:
   </footer>
 </div>
 {NB_JS}
+{CRAWL_JS}
 <script>
 /* Keep the collection table current every 10 s, but ONLY while something is
    queued or running, and only while the tab is visible. Polling forever kept
@@ -734,20 +916,28 @@ def status():
             "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
-@app.post("/fetch/{key}")
-async def fetch(key: str, request: Request):
-    # Starting a pull costs memory, Socrata goodwill and a rewrite of the
-    # bucket, so it needs the FETCH_TOKEN (Render env) in an X-Fetch-Token
-    # header. With no token configured, web pulls are simply off: the pulls
-    # that matter run on a laptop. Anonymous pulls once let anyone start eleven
-    # at once on a 512 MB server (review, 2026-10-17).
+def _admin_error(request: Request):
+    """None if the request carries the admin token; else the 403 to return.
+
+    Anything that starts work (a pull, a crawl, a site check) or shows scraped
+    content needs FETCH_TOKEN (Render env) in an X-Fetch-Token header. With no
+    token configured those actions are simply off. Anonymous pulls once let
+    anyone start eleven at once on a 512 MB server (review, 2026-10-17)."""
     token = os.environ.get("FETCH_TOKEN") or ""
     given = request.headers.get("x-fetch-token") or ""
     if not token:
-        return JSONResponse({"error": "web pulls are off on this server (no FETCH_TOKEN set). "
-                             "Run fetch.py on a laptop."}, status_code=403)
+        return JSONResponse({"error": "the control panel is off on this server: set FETCH_TOKEN "
+                             "in Render's Environment tab"}, status_code=403)
     if not hmac.compare_digest(given.encode(), token.encode()):
-        return JSONResponse({"error": "missing or wrong X-Fetch-Token"}, status_code=403)
+        return JSONResponse({"error": "wrong password"}, status_code=403)
+    return None
+
+
+@app.post("/fetch/{key}")
+async def fetch(key: str, request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
     if key not in S.BY_KEY and key not in ("core", "all"):
         return JSONResponse({"error": f"unknown source '{key}'"}, status_code=404)
     # The big ones would run this 512 MB dyno out of memory, or be cut off when
@@ -791,6 +981,154 @@ async def fetch(key: str, request: Request):
 
     asyncio.get_running_loop().run_in_executor(None, go)
     return {"status": "queued", "key": key, "run": run, "poll": "/api/jobs"}
+
+
+# ── business websites: the free check + Firecrawl (crawlkit.py) ─────────
+def _ck():
+    import crawlkit
+    return crawlkit
+
+
+def _crawl_call(fn):
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 — shown in the panel, never a 500
+        return JSONResponse({"error": jobs.clean(f"{e}")}, status_code=400)
+
+
+@app.get("/api/crawl/overview")
+def crawl_overview():
+    """Public: counts only — no URLs, no extracted text."""
+    ck = _ck()
+    return _crawl_call(lambda: {**ck.overview(), "can_pull": ck.CAN_PULL})
+
+
+@app.get("/api/crawl/admin")
+def crawl_admin(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    ck = _ck()
+
+    def build():
+        try:
+            cr = ck.credits()
+        except Exception as e:  # noqa: BLE001
+            cr = {"error": jobs.clean(str(e))}
+        c = ck.config()
+        cols, rows = ck.results(50)
+        ok = ck.CRAWLABLE if c.get("include_blocked") else ("alive", "alive_js")
+        waiting = ck.query(f"""SELECT count(DISTINCT domain) FROM site_checks
+                               WHERE status IN {ok}""")[0][0]
+        return {"credits": cr, "config": c, "credits_per_page": ck.CREDITS,
+                "field_types": list(ck.FIELD_TYPES), "crawlable_sites": waiting,
+                "runs": [{k: v for k, v in r.items() if k != "urls"} for r in ck.runs()][-10:],
+                "results": {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows]}}
+    return _crawl_call(build)
+
+
+@app.post("/api/crawl/config")
+async def crawl_config(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    body = await request.json()
+    return _crawl_call(lambda: {"saved": _ck().save_config(body)})
+
+
+@app.post("/api/crawl/start")
+async def crawl_start(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    body = await request.json()
+    limit = int(body.get("limit") or 0) or None
+    return _crawl_call(lambda: {"started": _ck().start(limit, origin="web")})
+
+
+@app.post("/api/crawl/stop")
+def crawl_stop(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    return _crawl_call(lambda: {"stopped": _ck().stop_run()})
+
+
+@app.post("/api/crawl/collect")
+def crawl_collect(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    return _crawl_call(lambda: {"runs": _ck().refresh()})
+
+
+@app.post("/api/crawl/check")
+async def crawl_check(request: Request):
+    """The free website check, in the background (a subprocess, like /fetch)."""
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    body = await request.json()
+    limit = max(1, min(int(body.get("limit") or 2000), 50000))
+    with _lock:
+        running = sorted({j["source"] for j in jobs.active_here() if j.get("step") != jobs.REMOTE_STEP})
+        if running:
+            return JSONResponse({"error": f"busy: {', '.join(running)} is running here"}, status_code=409)
+        run = jobs.new_run()
+        jobs.queue("site_checks", run, "web")
+    jobs.mirror_soon()
+
+    def go():
+        code = None
+        try:
+            code = subprocess.run([sys.executable, str(HERE / "crawl.py"), "check", f"--limit={limit}",
+                                   f"--run={run}"], cwd=HERE, timeout=3600, check=False).returncode
+        except subprocess.TimeoutExpired:
+            code = "timeout"
+        except Exception as e:  # noqa: BLE001
+            code = type(e).__name__
+        finally:
+            jobs.reap(run, code)
+
+    asyncio.get_running_loop().run_in_executor(None, go)
+    return {"status": "queued", "limit": limit, "poll": "/api/jobs"}
+
+
+@app.get("/api/crawl/results.csv")
+def crawl_results_csv(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    import csv
+    import io
+    from fastapi.responses import Response
+    cols, rows = _ck().results(100_000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    w.writerows(rows)
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=queens_web_facts.csv"})
+
+
+def _crawl_collector():
+    """Collect finished Firecrawl runs while this server is awake: Firecrawl
+    keeps results ~24 h, so nobody has to remember to press Collect."""
+    import time as _time
+    while True:
+        _time.sleep(120)
+        try:
+            if os.environ.get("FIRECRAWL_API_KEY"):
+                ck = _ck()
+                if any(not r.get("collected_at") for r in ck.runs()):
+                    ck.refresh()
+        except Exception as e:  # noqa: BLE001
+            print(f"[crawl] collector: {type(e).__name__}: {jobs.clean(e)}", flush=True)
+
+
+@app.on_event("startup")
+def _start_collector():
+    threading.Thread(target=_crawl_collector, daemon=True, name="crawl-collector").start()
 
 
 @app.get("/collection", response_class=HTMLResponse)

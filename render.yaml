@@ -23,5 +23,8 @@ services:
       # With it, send the same value in an X-Fetch-Token header.
       - key: FETCH_TOKEN
         sync: false
+      # Firecrawl, for the Websites control panel (research only).
+      - key: FIRECRAWL_API_KEY
+        sync: false
       # ⚠️ DELIBERATELY NO DATABASE_URL. This service must never be able to
       # reach BizGenome's Neon database. Its only store is a local DuckDB file.

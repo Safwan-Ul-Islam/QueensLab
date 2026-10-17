@@ -24,7 +24,9 @@ python fetch.py --core          # the 5 that matter most
 python fetch.py --all           # everything (~1.7M Queens rows)
 
 python fetch.py --jobs          # the collection table, in the terminal
-python crawl.py --dry-run       # which business websites Firecrawl would read (FIRECRAWL_API_KEY in .env)
+python crawl.py check           # free: is each business website alive / dead / parked / hijacked?
+python crawl.py start --limit 50   # Firecrawl reads alive sites for the facts in the requirements
+python crawl.py status | collect | stop | config | results
 python nta_profile.py           # rebuild the neighbourhood profile
 python analyze.py               # terminal analyses
 uvicorn app:app --reload        # the page, at localhost:8000
@@ -78,6 +80,25 @@ result and the error. Shown on the page (Collection), at `/api/jobs`, and by
   went quiet shows as **stalled**, never as running.
 - "Succeeded" means saved; the GCS column says separately whether it reached
   the bucket ("not uploaded" → `python fetch.py --push`).
+
+## Business websites — the check and Firecrawl (`crawlkit.py`)
+
+1. **Free check** of every Queens business website in `overture_places`: alive,
+   alive but JavaScript-only, blocked by a bot wall, dead (domain gone — often a
+   closure), parked/for sale, hijacked by spam, or a platform page (Yelp, Facebook,
+   booking widgets…). One request per site, no Firecrawl, no cost.
+2. **Firecrawl** reads only alive, own sites, as a batch on Firecrawl's side (a run
+   survives our free server sleeping; results are kept there ~24 h and collected
+   automatically every 2 minutes while the page is awake, or by `crawl.py collect`).
+3. **Requirements** — the fields to extract (name, type, description), the
+   instructions, filters by category or neighbourhood, how often to re-read — are
+   edited in the page's **control panel** or `crawl.py config`, and stored in the
+   bucket so the laptop and the server share them. Structured mode costs 5
+   credits a page, text mode 1.
+
+The control panel (Websites → Control panel) needs the password in `FETCH_TOKEN`
+and `FIRECRAWL_API_KEY`, both in Render's Environment tab. Results stay in
+`scraped/` — research only, never committed, never merged into BizGenome.
 
 ## Neighbourhoods — `nta_profile.py`
 
