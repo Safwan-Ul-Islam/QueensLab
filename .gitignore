@@ -23,3 +23,6 @@ jobs.sqlite-*
 raw/tmp_*
 # Scraped pages: research only, never committed (crawl.py).
 scraped/
+# Third-party open data (Overture; Foursquare records need their NOTICE kept):
+# stays in the bucket, not redistributed through this public repo.
+raw/overture_places.parquet
