@@ -10,5 +10,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # The Bronze archive. An HMAC key for a service account scoped to this
+      # ONE bucket in the separate `queens-data` GCP project — it cannot reach
+      # BizGenome's database or anything else in Google Cloud.
+      - key: GCS_BUCKET
+        value: queenslab-research-yourteam-2026
+      - key: GCS_HMAC_KEY_ID
+        sync: false             # paste in the Render dashboard
+      - key: GCS_HMAC_SECRET
+        sync: false             # paste in the Render dashboard
       # ⚠️ DELIBERATELY NO DATABASE_URL. This service must never be able to
       # reach BizGenome's Neon database. Its only store is a local DuckDB file.

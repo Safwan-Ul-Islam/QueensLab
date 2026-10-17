@@ -33,10 +33,23 @@ app = FastAPI(title="QueensLab", docs_url=None, redoc_url=None)
 def _restore():
     """Render's free disk is empty on every boot; the Parquet in the repo is
     not. Rebuild from it before the first request is served."""
-    if not DB.exists():
-        import fetch
-        n = fetch.rebuild_from_parquet()
-        print(f"[queenslab] rebuilt {n:,} rows from committed parquet", flush=True)
+    if DB.exists():
+        return
+    import fetch
+    import gcs
+    # The bucket is the store. The Parquet committed in raw/ is the fallback, so
+    # a missing or broken key degrades to slightly-older data, never to nothing.
+    if gcs.enabled():
+        try:
+            n = fetch.rebuild_from_gcs()
+            print(f"[queenslab] rebuilt {n:,} rows from gs://{gcs.bucket()}", flush=True)
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"[queenslab] bucket unavailable ({type(e).__name__}: {str(e)[:140]}) "
+                  "— falling back to committed parquet", flush=True)
+            DB.unlink(missing_ok=True)
+    n = fetch.rebuild_from_parquet()
+    print(f"[queenslab] rebuilt {n:,} rows from committed parquet", flush=True)
 _fetching: set[str] = set()
 _lock = threading.Lock()
 
@@ -323,6 +336,8 @@ def status():
             "tables": [{"key": k, "rows": n, "bytes": b, "fetched": t} for k, n, b, t in rows],
             "fetching": sorted(_fetching),
             "database": "local duckdb (no external database)",
+            "bucket": (f"gs://{__import__('gcs').bucket()}" if __import__('gcs').enabled()
+                       else "not configured — using parquet committed in the repo"),
             "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 

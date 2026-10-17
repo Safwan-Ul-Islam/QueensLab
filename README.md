@@ -31,34 +31,43 @@ uvicorn app:app --reload        # the page, at localhost:8000
 
 Render blueprint is in `render.yaml` — free plan, Python, `uvicorn app:app`.
 
-## Storage — how the data survives Render's free plan
-
-The free disk is wiped on every restart, so the data **ships with the code**:
+## Storage
 
 ```
-raw/*.parquet        ← committed to git (~19 MB, zstd-compressed)
-raw/_manifest.json   ← committed: row counts + when each table was fetched
-queens.duckdb        ← NOT committed; rebuilt from the Parquet on every boot (~5s)
+gs://queenslab-research-yourteam-2026/raw/*.parquet   ← the store (GCP project: queens-data)
+gs://…/raw/_fetch_log.parquet                         ← row counts + when each table was pulled
+raw/*.parquet in this repo                            ← fallback if the bucket is unreachable
+queens.duckdb                                         ← never stored; rebuilt on every boot
 ```
 
-**To refresh the data:**
+On boot the app rebuilds its database **from the bucket**. If the bucket is
+unreachable — key missing, wrong, or revoked — it logs why and falls back to the
+Parquet committed here, so the page never comes up empty.
+
+Every `fetch.py` save also pushes to the bucket, so data fetched on the live
+service (`POST /fetch/<key>`) now survives restarts.
+
+### Credentials
+
+DuckDB talks to GCS directly with an **HMAC key** — no Google SDK, no `gcloud`.
+Three variables, in `.env` locally (gitignored) and in Render's Environment tab:
+
+```
+GCS_BUCKET=queenslab-research-yourteam-2026
+GCS_HMAC_KEY_ID=GOOG1E…
+GCS_HMAC_SECRET=…
+```
+
+The key belongs to a service account scoped to **this one bucket**. It cannot
+reach BizGenome's database or anything else in Google Cloud.
+
+### Commands
 
 ```bash
-python fetch.py --core            # or --only <table>, or --all
-git add raw/ && git commit -m "Refresh Queens data" && git push
+python fetch.py --push            # upload everything already pulled
+python fetch.py --core            # fetch; each table lands locally AND in the bucket
+curl https://queenslab.onrender.com/api/status   # "bucket" says which store is live
 ```
-
-Then redeploy on Render. (The service was created from a public repo URL, which
-has no webhook — pushes do **not** auto-deploy. Use *Manual Deploy* in the
-dashboard.)
-
-`POST /fetch/<key>` still works on the live service, but anything it pulls is
-lost at the next restart. Fetch locally and commit instead.
-
-**When this stops being enough:** GitHub rejects files over 100 MB, and the repo
-grows with every refresh. If the data outgrows that, move the Parquet to object
-storage (Cloudflare R2 or S3) and read it remotely — DuckDB can query Parquet
-over HTTPS directly.
 
 ## Files
 

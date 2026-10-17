@@ -30,6 +30,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import sources as S  # noqa: E402
+import gcs  # noqa: E402
 
 RAW = HERE / "raw"
 DB = HERE / "queens.duckdb"
@@ -122,6 +123,15 @@ def save(key: str, tmp: Path, n_rows: int) -> Path:
     con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
     con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
                 [key, n_rows, datetime.now(timezone.utc), path.stat().st_size])
+    if gcs.enabled():
+        try:
+            gcs.attach(con)
+            dest = gcs.push_table(con, key)
+            gcs.push_log(con)
+            print(f"\n    -> {dest}", end="")
+        except Exception as e:  # noqa: BLE001 — the local copy is already safe
+            print(f"\n    ⚠ bucket push failed, local copy kept: {type(e).__name__}: {str(e)[:120]}",
+                  end="")
     con.close()
     tmp.unlink(missing_ok=True)
     _manifest_put(key, n_rows)
@@ -163,6 +173,55 @@ def rebuild_from_parquet(db: Path = DB) -> int:
     return total
 
 
+def rebuild_from_gcs(db: Path = DB) -> int:
+    """Recreate the database from the bucket. Raises if the bucket is unusable,
+    so the caller can fall back to the Parquet committed in raw/."""
+    import duckdb
+    con = duckdb.connect(str(db))
+    try:
+        gcs.attach(con)
+        tables = gcs.list_tables(con)
+        if not tables:
+            raise RuntimeError(f"no tables under gs://{gcs.bucket()}/{gcs.PREFIX}/")
+        total = 0
+        for key in tables:
+            con.execute(f'CREATE OR REPLACE TABLE "{key}" AS SELECT * FROM read_parquet(?)',
+                        [gcs.url(f"{key}.parquet")])
+            total += con.execute(f'SELECT count(*) FROM "{key}"').fetchone()[0]
+        try:
+            con.execute("CREATE OR REPLACE TABLE _fetch_log AS SELECT * FROM read_parquet(?)",
+                        [gcs.url("_fetch_log.parquet")])
+        except Exception:  # noqa: BLE001 — tables without dates beat no tables
+            con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
+                           (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
+        return total
+    finally:
+        con.close()
+
+
+def push_all() -> int:
+    """Upload every table already in the local database to the bucket."""
+    import duckdb
+    if not gcs.enabled():
+        print("  GCS not configured — set GCS_BUCKET, GCS_HMAC_KEY_ID, GCS_HMAC_SECRET in .env")
+        return 1
+    con = duckdb.connect(str(DB))
+    try:
+        gcs.attach(con)
+        keys = [r[0] for r in con.execute("SELECT key FROM _fetch_log ORDER BY rows").fetchall()]
+        for k in keys:
+            t0 = time.time()
+            dest = gcs.push_table(con, k)
+            n = con.execute(f'SELECT count(*) FROM "{k}"').fetchone()[0]
+            print(f"  {k:<20}{n:>10,} rows -> {dest}  ({time.time()-t0:.1f}s)")
+        gcs.push_log(con)
+        print(f"  _fetch_log -> {gcs.url('_fetch_log.parquet')}")
+        print(f"\n  bucket now holds {len(gcs.list_tables(con))} tables")
+        return 0
+    finally:
+        con.close()
+
+
 def already(key: str) -> tuple[int, str] | None:
     import duckdb
     if not DB.exists():
@@ -187,7 +246,12 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="refetch even if already pulled")
     ap.add_argument("--cap", type=int, help="stop each source after N rows (for a quick trial)")
     ap.add_argument("--where", help="override the WHERE for --only (e.g. a date bound)")
+    ap.add_argument("--push", action="store_true",
+                    help="upload every local table to the GCS bucket, then exit")
     a = ap.parse_args()
+
+    if a.push:
+        return push_all()
 
     if a.list or not (a.all or a.core or a.only):
         print(f"\n  {'key':<20}{'rows when probed':>18}  source")

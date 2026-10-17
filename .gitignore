@@ -3,3 +3,4 @@ queens.duckdb
 *.duckdb.wal
 __pycache__/
 .venv/
+.env
