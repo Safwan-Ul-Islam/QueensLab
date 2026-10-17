@@ -69,6 +69,16 @@ def q(sql: str, limit: int = 60):
         c.close()
 
 
+
+def source_link(src) -> str:
+    """Human-readable page for a source, derived rather than stored."""
+    if getattr(src, "kind", None) == "acs":
+        return "https://data.census.gov/"
+    if getattr(src, "kind", None) == "cbp":
+        return "https://www.census.gov/programs-surveys/cbp.html"
+    return f"https://{src.domain}/d/{src.dataset}"
+
+
 # ── analyses shown on the page ───────────────────────────────────────────
 PANELS = [
     ("Business mix", "dcwp_licences", """
@@ -123,10 +133,21 @@ th{text-align:left;font-size:10.5px;font-weight:650;letter-spacing:.06em;text-tr
  color:#8a92a0;border-bottom:1.5px solid #15171c;padding:0 10px 7px 0}
 td{padding:7px 10px 7px 0;border-bottom:1px solid #f1f3f6}
 td:not(:first-child),th:not(:first-child){text-align:right}
+/* numbers right, prose left — the notes column was inheriting the number rule */
+td.l,th.l{text-align:left}
 .muted{color:#8a92a0}
 .empty{background:#fafbfd;border:1px dashed #dde2ea;border-radius:10px;padding:22px;
  color:#697180;font-size:14px}
 code{font:12.5px 'SFMono-Regular',Menlo,monospace;background:#f3f5f9;padding:2px 6px;border-radius:4px}
+.note{color:#697180;font-size:13.5px;margin:0 0 12px}
+textarea{width:100%;font:13px 'SFMono-Regular',Menlo,monospace;padding:12px 14px;
+ border:1px solid #dde2ea;border-radius:9px;resize:vertical;background:#fbfcfe;color:#15171c}
+textarea:focus{outline:2px solid #2b52e0;outline-offset:1px;border-color:transparent}
+button{margin-top:10px;font:600 14px 'Inter',sans-serif;color:#fff;background:#15171c;
+ border:0;border-radius:999px;padding:11px 24px;cursor:pointer}
+button:hover{background:#000}
+a{color:#2b52e0;text-decoration:none}
+a:hover{text-decoration:underline}
 .chips{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0 0}
 .chip{font-size:12px;color:#5d6475;background:#f6f8fb;border:1px solid #e6eaf0;
  border-radius:999px;padding:4px 11px}
@@ -145,7 +166,7 @@ def table_html(cols, rows) -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home():
+def home(sql: str = "", result: str = ""):
     have = {k for k, *_ in loaded()}
     total = sum(r[1] for r in loaded())
     chips = "".join(
@@ -162,6 +183,20 @@ def home():
         cols, rows = q(sql)
         body.append(f"<h2>{html.escape(title)}</h2>" + table_html(cols, rows))
 
+    srows = []
+    for src in S.ALL:
+        on = src.key in have
+        n = f"{src.probed:,}" if src.probed else "—"
+        srows.append(
+            f'<tr><td>{"✅" if on else "○"}</td>'
+            f'<td class="l"><a href="{source_link(src)}" target="_blank" rel="noopener">'
+            f'{html.escape(src.label)}</a></td>'
+            f'<td><code>{html.escape(src.key)}</code></td><td>{n}</td>'
+            f'<td class="muted l">{html.escape((src.note or "")[:120])}</td></tr>')
+    src_table = ('<table><thead><tr><th></th><th>Source</th><th>Table</th>'
+                 '<th>Queens rows</th><th class="l">Notes</th></tr></thead><tbody>'
+                 + "".join(srows) + "</tbody></table>")
+
     state = (f"{len(have)} of {len(S.ALL)} sources · {total:,} Queens rows"
              if have else "No data yet")
     return f"""<!doctype html><html><head><meta charset="utf-8">
@@ -177,9 +212,23 @@ def home():
   <div class="chips">{chips}</div>
 </div></header>
 <div class="wrap">{''.join(body)}
+  <h2>Where this data comes from</h2>
+  <p class="note">Every source below is <b>free and public</b>. Nothing is bought, and
+  nothing here is used to train BizGenome's model.</p>
+  {src_table}
+
+  <h2>Query it yourself</h2>
+  <p class="note">Read-only SQL over the tables above. Try
+  <code>SELECT business_category, count(*) FROM dcwp_licences GROUP BY 1 ORDER BY 2 DESC</code></p>
+  <form method="get" action="/query">
+    <textarea name="sql" rows="3" placeholder="SELECT * FROM dcwp_licences LIMIT 20">{sql}</textarea>
+    <button type="submit">Run</button>
+  </form>
+  {result}
+
   <h2>Refresh</h2>
   <div class="empty">On Render's free plan the disk is wiped on restart, so data is
-  re-fetched rather than stored. Pull with <code>POST /fetch/&lt;key&gt;</code> or run
+  re-fetched rather than stored. Pull with <code>POST /fetch/core</code>, or run
   <code>python fetch.py --core</code> locally.</div>
 </div></body></html>"""
 
@@ -216,3 +265,27 @@ async def fetch(key: str):
 
     asyncio.get_running_loop().run_in_executor(None, run)
     return {"status": "started", "key": key, "poll": "/api/status"}
+
+SAFE = ("select", "with", "describe", "show", "summarize", "pragma_table_info")
+
+
+@app.get("/query", response_class=HTMLResponse)
+def query(sql: str = ""):
+    """Read-only SQL over the research tables.
+
+    This page is PUBLIC. The data is all public records, so exposure is not the
+    worry — abuse is. The connection is read-only, only read statements are
+    accepted, and results are capped.
+    """
+    sql = (sql or "").strip().rstrip(";")
+    if not sql:
+        return home()
+    first = sql.lstrip("( \n\t").split(None, 1)[0].lower() if sql.split() else ""
+    if first not in SAFE:
+        return home(sql, '<div class="empty">Only read queries are allowed '
+                         '(SELECT, WITH, DESCRIBE, SHOW, SUMMARIZE).</div>')
+    cols, rows = q(sql, limit=200)
+    if cols == ["error"]:
+        return home(sql, f'<div class="empty">{html.escape(str(rows[0][0]))}</div>')
+    note = f'<p class="note">{len(rows)} row(s){" · capped at 200" if len(rows) == 200 else ""}</p>'
+    return home(sql, note + table_html(cols, rows))

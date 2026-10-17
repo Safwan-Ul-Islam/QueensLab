@@ -70,8 +70,11 @@ PROPERTY = [
     Source("pluto", "PLUTO tax lots",
            "data.cityofnewyork.us", "64uk-42ks",
            where="upper(borough)='QN'", probed=324_483,
-           order_by="bbl", tags=("property", "core"),
-           note="Every lot: land use, floor area, year built, commercial sqft."),
+           order_by="bbl", tags=("property",),
+           note="Every lot: land use, floor area, year built, commercial sqft. "
+                "⚠️ NOT in --core on purpose: 324k rows with a server-side sort takes "
+                "~80 minutes, and Render's free dyno sleeps after 15 idle minutes, so it "
+                "can never finish there. Pull it locally: python fetch.py --only pluto"),
 
     Source("dof_sales", "DOF rolling property sales",
            "data.cityofnewyork.us", "usep-8jbt",
