@@ -66,7 +66,7 @@ reach BizGenome's database or anything else in Google Cloud.
 ```bash
 python fetch.py --push            # upload everything already pulled
 python fetch.py --core            # fetch; each table lands locally AND in the bucket
-curl https://queenslab.onrender.com/api/status   # "bucket" says which store is live
+curl https://queenslab.onrender.com/api/status   # "loaded_from" = where this boot's data really came from
 ```
 
 ## Files

@@ -33,23 +33,31 @@ app = FastAPI(title="QueensLab", docs_url=None, redoc_url=None)
 def _restore():
     """Render's free disk is empty on every boot; the Parquet in the repo is
     not. Rebuild from it before the first request is served."""
+    global _loaded_from
     if DB.exists():
+        _loaded_from = "existing database file on disk"
         return
     import fetch
     import gcs
     # The bucket is the store. The Parquet committed in raw/ is the fallback, so
     # a missing or broken key degrades to slightly-older data, never to nothing.
+    reason = "bucket not configured"
     if gcs.enabled():
         try:
             n = fetch.rebuild_from_gcs()
-            print(f"[queenslab] rebuilt {n:,} rows from gs://{gcs.bucket()}", flush=True)
+            _loaded_from = f"gs://{gcs.bucket()}"
+            print(f"[queenslab] rebuilt {n:,} rows from {_loaded_from}", flush=True)
             return
         except Exception as e:  # noqa: BLE001
-            print(f"[queenslab] bucket unavailable ({type(e).__name__}: {str(e)[:140]}) "
-                  "— falling back to committed parquet", flush=True)
+            reason = f"bucket failed — {type(e).__name__}: {str(e)[:140]}"
+            print(f"[queenslab] {reason} — falling back to committed parquet", flush=True)
             DB.unlink(missing_ok=True)
     n = fetch.rebuild_from_parquet()
+    _loaded_from = f"parquet committed in the repo ({reason})"
     print(f"[queenslab] rebuilt {n:,} rows from committed parquet", flush=True)
+# Where the data on this boot ACTUALLY came from. `bucket` in /api/status only
+# says one is configured — after a silent fallback that would have misreported.
+_loaded_from = "not loaded yet"
 _fetching: set[str] = set()
 _lock = threading.Lock()
 
@@ -337,7 +345,8 @@ def status():
             "fetching": sorted(_fetching),
             "database": "local duckdb (no external database)",
             "bucket": (f"gs://{__import__('gcs').bucket()}" if __import__('gcs').enabled()
-                       else "not configured — using parquet committed in the repo"),
+                       else "not configured"),
+            "loaded_from": _loaded_from,
             "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
@@ -353,7 +362,10 @@ async def fetch(key: str):
     def run():
         arg = f"--{key}" if key in ("core", "all") else f"--only={key}"
         try:
-            subprocess.run([sys.executable, str(HERE / "fetch.py"), arg],
+            # --force: after a rebuild every table already counts as fetched, so
+            # without it a live refresh silently did nothing and never reached
+            # the bucket.
+            subprocess.run([sys.executable, str(HERE / "fetch.py"), arg, "--force"],
                            cwd=HERE, timeout=1800, check=False)
         finally:
             with _lock:
