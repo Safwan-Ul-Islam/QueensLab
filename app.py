@@ -308,6 +308,19 @@ td.l,th.l{text-align:left}
 .cfg input,.cfg select{width:100%}
 .cfg td{padding:4px 6px 4px 0}
 #crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
+.live{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0;padding:12px 14px;
+ border:1px solid var(--line);border-radius:10px;background:var(--soft)}
+.live .dot{width:10px;height:10px;border-radius:50%;background:#c3c9d3}
+.live.running .dot{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+.live.done .dot{background:var(--good)}
+.live.failed .dot{background:#b42318}
+.live .bar{flex-basis:100%;height:6px;background:#e6e9ef;border-radius:3px;overflow:hidden}
+.live .bar div{height:100%;width:0;background:var(--accent);transition:width .6s}
+.live.done .bar div{background:var(--good)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(1.35)}}
+.fbar{display:grid;grid-template-columns:200px 1fr 90px;gap:10px;align-items:center;font-size:12.5px;margin:3px 0}
+.fbar .t{height:8px;background:#eef1f5;border-radius:4px;overflow:hidden}
+.fbar .t div{height:100%;background:var(--good)}
 .busy{background:#fff8e6;border:1px solid #f3dfae;color:#7a5200;border-radius:11px;
  padding:12px 16px;margin:26px 0 0;font-size:14px}
 .empty{background:var(--soft);border:1px dashed #dde2ea;border-radius:11px;padding:20px;
@@ -597,6 +610,7 @@ CRAWL_JS = """<script>
           (r.status || '') + ' ' + (r.completed || 0) + '/' + r.n + ' · ' + (r.credits_used || 0) + ' credits' +
           (r.collected_at ? ' · collected' : (r.expires_at ? ' · results kept until ' + r.expires_at.slice(0, 16).replace('T', ' ') : '')), 'muted'));
       });
+      live();
       $('cfg-mode').value = cfg.mode; $('cfg-prompt').value = cfg.prompt;
       $('cfg-recrawl').value = cfg.recrawl_days; $('cfg-conf').value = cfg.filters.min_confidence;
       $('cfg-blocked').checked = !!cfg.include_blocked;
@@ -612,6 +626,50 @@ CRAWL_JS = """<script>
       t.appendChild(tb); box.appendChild(t);
     }).catch(function (e) { msg(e.message); });
   }
+  var polling = null, wasRunning = false;
+  function live() {
+    return api('GET', '/api/crawl/progress').then(function (d) {
+      var box = $('crawl-live'), a = d.active, st = d.stats || {}, last = st.last_run;
+      if (d.running && a) {
+        box.className = 'live running';
+        var pct = a.n ? Math.round(100 * (a.completed || 0) / a.n) : 0;
+        $('live-title').textContent = a.kind === 'follow' ? 'Running — reading linked pages' : 'Running at Firecrawl';
+        $('live-detail').textContent = (a.completed || 0) + ' of ' + a.n + ' pages done · ' + (a.credits_used || 0) +
+          ' credits used · started ' + (a.started || '').slice(11, 16) + ' UTC · updates every 6 s';
+        $('live-bar').style.width = pct + '%';
+      } else if (last) {
+        box.className = 'live ' + (last.status === 'completed' ? 'done' : (last.status === 'running' ? 'running' : 'failed'));
+        $('live-title').textContent = last.status === 'completed' ? 'Finished' : ('Last run: ' + last.status);
+        $('live-detail').textContent = (last.finished ? last.finished.slice(0, 16).replace('T', ' ') + ' UTC · ' : '') +
+          (last.returned || 0) + ' of ' + (last.sent || 0) + ' sites read · ' + (last.linked_pages || 0) + ' linked pages · ' +
+          last.businesses_with_facts + ' businesses with facts · ' + last.facts_filled + ' facts · ' + last.credits_used + ' credits';
+        $('live-bar').style.width = '100%';
+      } else {
+        box.className = 'live idle'; $('live-title').textContent = 'Idle';
+        $('live-detail').textContent = 'No runs yet.'; $('live-bar').style.width = '0';
+      }
+      // statistics
+      var t = $('stat-totals'); t.textContent = '';
+      stat(t, (st.businesses_read || 0).toLocaleString(), 'businesses read');
+      stat(t, (st.pages_read || 0).toLocaleString(), 'pages read');
+      stat(t, (st.facts_filled || 0).toLocaleString(), 'facts filled');
+      stat(t, st.stored_in_bucket == null ? '—' : st.stored_in_bucket.toLocaleString(), 'pages saved in the bucket');
+      $('stat-last').textContent = last ? ('Latest run: ' + last.sent + ' sites sent, ' + last.returned + ' read, ' +
+        last.businesses_with_facts + ' businesses with facts, ' + last.avg_fields_per_business + ' fields filled per business on average.') : '';
+      var f = $('stat-fields'); f.textContent = '';
+      f.appendChild(el('p', 'How many businesses have each field (yes/no fields count only a stated yes):', 'note'));
+      (st.field_fill || []).forEach(function (x) {
+        var row = el('div', null, 'fbar'); row.appendChild(el('span', x.field.replace(/_/g, ' ')));
+        var tr = el('div', null, 't'), fill = el('div'); fill.style.width = x.pct + '%'; tr.appendChild(fill); row.appendChild(tr);
+        row.appendChild(el('span', x.filled + ' · ' + x.pct + '%', 'muted')); f.appendChild(row);
+      });
+      if (wasRunning && !d.running) { msg('Finished — results are saved.'); load(); }
+      wasRunning = d.running;
+      clearTimeout(polling);
+      if (d.running && !document.hidden) polling = setTimeout(live, 6000);
+    }).catch(function (e) { $('live-detail').textContent = e.message; });
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && wasRunning) live(); });
   function act(p, method, path, body, done) {
     msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); }).catch(function (e) { msg(e.message); });
   }
@@ -621,7 +679,10 @@ CRAWL_JS = """<script>
   $('crawl-start').onclick = function () {
     var k = parseInt($('crawl-limit').value, 10);
     if (!confirm('Send ' + k + ' sites to Firecrawl? ' + $('crawl-estimate').textContent + '.')) return;
-    act('Starting…', 'POST', '/api/crawl/start', {limit: k}, 'Started — Firecrawl is working. Results are collected automatically.');
+    var box = $('crawl-live'); box.className = 'live running';
+    $('live-title').textContent = 'Starting…'; $('live-detail').textContent = 'sending ' + k + ' sites to Firecrawl'; $('live-bar').style.width = '2%';
+    act('Starting…', 'POST', '/api/crawl/start', {limit: k}, 'Started — the status above updates by itself.');
+    wasRunning = true;
   };
   $('crawl-stop').onclick = function () { if (confirm('Stop the run? What it finished is kept.')) act('Stopping…', 'POST', '/api/crawl/stop'); };
   $('crawl-collect').onclick = function () { act('Checking Firecrawl…', 'POST', '/api/crawl/collect'); };
@@ -800,6 +861,9 @@ def render(sql: str = "", result: str = "") -> str:
       </div>
       <div id="crawl-admin" hidden>
         <div class="stats" id="crawl-stats"></div>
+        <div id="crawl-live" class="live idle"><span class="dot"></span><b id="live-title">Idle</b>
+          <span id="live-detail" class="muted"></span>
+          <div class="bar"><div id="live-bar"></div></div></div>
         <h3>Run</h3>
         <div class="pnl-row">
           <label>Sites <input id="crawl-limit" type="number" min="1" max="1000" value="50"></label>
@@ -834,6 +898,10 @@ def render(sql: str = "", result: str = "") -> str:
           <label>Only neighbourhoods <input id="cfg-ntas" placeholder="e.g. QN0702, QN2501"></label>
           <button type="button" id="cfg-save">Save requirements</button>
         </div>
+        <h3>Statistics</h3>
+        <div class="stats" id="stat-totals"></div>
+        <p class="note" id="stat-last"></p>
+        <div id="stat-fields"></div>
         <h3>Latest results <a href="#" id="crawl-csv">download CSV</a></h3>
         <div class="scroll" id="crawl-results"></div>
       </div>
@@ -1030,6 +1098,15 @@ def crawl_admin(request: Request):
                 "runs": [{k: v for k, v in r.items() if k != "urls"} for r in ck.runs()][-10:],
                 "results": {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows]}}
     return _crawl_call(build)
+
+
+@app.get("/api/crawl/progress")
+def crawl_progress(request: Request):
+    """The panel's live status: polled every few seconds while a run is going."""
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    return _crawl_call(lambda: _ck().progress())
 
 
 @app.post("/api/crawl/config")

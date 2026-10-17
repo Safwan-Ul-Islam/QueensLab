@@ -752,6 +752,74 @@ def results(limit: int = 100) -> tuple[list[str], list[tuple]]:
              "fetched_at"], out[:int(limit)])
 
 
+def _fill(visits: list[dict], names: list[str]) -> dict:
+    """How many of these businesses have each field filled. A yes/no field
+    counts only a stated YES: the extractor answers 'no' when the page is
+    silent, so counting 'no' made every yes/no field look 100% filled."""
+    kinds = {f["name"]: f["type"] for f in config()["fields"]}
+    def has(v, n):
+        return v is True if kinds.get(n) == "yes/no" else not _empty(v)
+    return {n: sum(1 for v in visits if has(v["facts"].get(n), n)) for n in names}
+
+
+def stats() -> dict:
+    """What has been read, stored and filled — overall and for the latest run."""
+    c = config()
+    names = [f["name"] for f in c["fields"] if f["name"] != LINKS_FIELD]
+    vis = _visits()
+    latest = [vs[-1] for vs in vis.values()]
+    pages, with_facts, errors = query(
+        "SELECT count(*), count(facts), count(*) FILTER (WHERE facts IS NULL) FROM web_facts")[0]
+    stored = None
+    if gcs.enabled():
+        con = gcs._scratch(timeout_s=15)
+        try:
+            stored = con.execute("SELECT sum(num_rows) FROM parquet_file_metadata(?)",
+                                 [gcs.url("web_facts.parquet", PREFIX)]).fetchone()[0]
+        except Exception:  # noqa: BLE001
+            stored = None
+        finally:
+            con.close()
+    fill = _fill(latest, names)
+    total_filled = sum(fill.values())
+    rs = runs()
+    last = next((r for r in reversed(rs) if r.get("kind", "home") == "home"), None)
+    last_stats = None
+    if last:
+        mine = [vs[-1] for vs in vis.values() if vs[-1]["visit"] == last["run_id"]]
+        follow = next((r for r in rs if r.get("parent") == last["run_id"]), None)
+        lf = _fill(mine, names)
+        last_stats = {"run_id": last["run_id"], "started": last.get("started"),
+                      "sent": last.get("n"), "returned": last.get("completed"),
+                      "businesses_with_facts": len(mine), "facts_filled": sum(lf.values()),
+                      "avg_fields_per_business": round(sum(lf.values()) / len(mine), 1) if mine else 0,
+                      "linked_pages": follow.get("completed") if follow else 0,
+                      "credits_used": (last.get("credits_used") or 0) + ((follow or {}).get("credits_used") or 0),
+                      "finished": (follow or last).get("collected_at") if last.get("collected_at") else None,
+                      "status": "running" if not last.get("collected_at") or (follow and not follow.get("collected_at"))
+                                else last.get("status")}
+    return {"businesses_read": len(latest), "pages_read": pages, "pages_with_facts": with_facts,
+            "pages_failed": errors, "stored_in_bucket": stored, "local_rows": pages,
+            "facts_filled": total_filled, "fields": len(names),
+            "field_fill": [{"field": n, "filled": fill[n],
+                            "yes_no": any(f["name"] == n and f["type"] == "yes/no" for f in c["fields"]),
+                            "pct": round(100 * fill[n] / len(latest), 1) if latest else 0} for n in names],
+            "last_run": last_stats}
+
+
+def progress() -> dict:
+    """For the panel's live status: update from Firecrawl (collecting anything
+    finished), then the active run, if any, and the statistics."""
+    if any(not r.get("collected_at") for r in runs()):
+        refresh()
+    active = [r for r in runs() if not r.get("collected_at")]
+    a = active[-1] if active else None
+    return {"running": bool(a),
+            "active": {k: a.get(k) for k in ("run_id", "kind", "status", "n", "completed", "credits_used",
+                                             "credits_est", "started", "expires_at")} if a else None,
+            "stats": stats()}
+
+
 def overview() -> dict:
     """Public-safe summary: no URLs, no extracted text."""
     checks = dict(query("SELECT status, count(*) FROM site_checks GROUP BY 1"))
