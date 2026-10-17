@@ -571,6 +571,54 @@ def print_jobs() -> int:
     return 0
 
 
+OVERTURE = "s3://overturemaps-us-west-2/release"
+QUEENS_BBOX = (-73.9626, 40.5414, -73.7004, 40.8007)   # clips some Brooklyn/Nassau; polygons decide
+
+
+def pull_overture(path: Path, job=None) -> int:
+    """Overture Maps places for Queens -> NDJSON at `path`.
+
+    Overture publishes GeoParquet monthly on a public S3 bucket; DuckDB reads
+    only the row groups whose bounding box touches Queens (~160k places, ~40 s),
+    then the 2020 NTA polygons cut it to Queens exactly. Needs `ntas` pulled."""
+    import duckdb
+    c = duckdb.connect()
+    try:
+        c.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial; SET s3_region='us-west-2'")
+        c.execute(f"ATTACH {_q(DB)} AS q (READ_ONLY)")
+        release = c.execute(
+            "SELECT max(regexp_extract(file, 'release/([^/]+)/', 1)) "
+            f"FROM glob('{OVERTURE}/*/theme=places/type=place/*.parquet')").fetchone()[0]
+        x0, y0, x1, y1 = QUEENS_BBOX
+        c.execute(f"""CREATE TEMP TABLE raw AS SELECT * FROM read_parquet(
+                        '{OVERTURE}/{release}/theme=places/type=place/*.parquet', hive_partitioning=0)
+                      WHERE bbox.xmin BETWEEN {x0} AND {x1} AND bbox.ymin BETWEEN {y0} AND {y1}""")
+        c.execute("CREATE TEMP TABLE nta AS SELECT nta2020, ntaname, ST_GeomFromGeoJSON(the_geom) g FROM q.ntas")
+        c.execute(f"""COPY (
+            SELECT r.id, r.names.primary AS name, r.basic_category AS category,
+                   r.taxonomy.primary AS category_detail, r.operating_status, r.confidence,
+                   r.websites[1] AS website, r.phones[1] AS phone, r.brand.names.primary AS brand,
+                   r.addresses[1].freeform AS address, r.addresses[1].postcode AS postcode,
+                   ST_X(r.geometry) AS longitude, ST_Y(r.geometry) AS latitude,
+                   n.nta2020, n.ntaname,
+                   list_distinct([s.dataset FOR s IN r.sources]) AS contributors,
+                   CASE WHEN list_contains([s.dataset FOR s IN r.sources], 'Foursquare')
+                        THEN 'Apache-2.0 (Foursquare: keep NOTICE)'
+                        WHEN list_contains([s.dataset FOR s IN r.sources], 'AllThePlaces')
+                        THEN 'CC0-1.0 / CDLA-Permissive-2.0' ELSE 'CDLA-Permissive-2.0' END AS licence,
+                   '{release}' AS overture_release
+            FROM raw r JOIN nta n ON ST_Within(r.geometry, n.g)
+            QUALIFY row_number() OVER (PARTITION BY r.id ORDER BY n.nta2020) = 1
+        ) TO {_q(path)} (FORMAT JSON)""")
+        n = c.execute(f"SELECT count(*) FROM read_json_auto({_q(path)})").fetchone()[0]
+        if job:
+            job.add_rows(n)
+            job.warn(f"Overture release {release}")
+        return n
+    finally:
+        c.close()
+
+
 # Restored 2026-10-17: the streaming rewrite (d985008) deleted these while
 # main() still called them, so refreshing acs_tracts or cbp_industry died
 # with a NameError.
@@ -785,6 +833,8 @@ def main() -> int:
             elif s.kind == "cbp":
                 n = rows_to_file(pull_cbp(), tmp)
                 job.add_rows(n)
+            elif s.kind == "overture":
+                n = pull_overture(tmp, job)
             elif windowed:
                 n = pull_windows(s, tmp, job=job)
             else:

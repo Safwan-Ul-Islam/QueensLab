@@ -21,3 +21,5 @@ jobs.sqlite-*
 .machine_id
 # DuckDB leaves this if killed mid-COPY; rebuild_from_parquet skips it too.
 raw/tmp_*
+# Scraped pages: research only, never committed (crawl.py).
+scraped/

@@ -24,6 +24,7 @@ python fetch.py --core          # the 5 that matter most
 python fetch.py --all           # everything (~1.7M Queens rows)
 
 python fetch.py --jobs          # the collection table, in the terminal
+python crawl.py --dry-run       # which business websites Firecrawl would read (FIRECRAWL_API_KEY in .env)
 python nta_profile.py           # rebuild the neighbourhood profile
 python analyze.py               # terminal analyses
 uvicorn app:app --reload        # the page, at localhost:8000

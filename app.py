@@ -176,6 +176,8 @@ def source_link(src) -> str:
         return "https://data.census.gov/"
     if getattr(src, "kind", None) == "cbp":
         return "https://www.census.gov/programs-surveys/cbp.html"
+    if getattr(src, "kind", None) == "overture":
+        return "https://docs.overturemaps.org/guides/places/"
     return f"https://{src.domain}/d/{src.dataset}"
 
 

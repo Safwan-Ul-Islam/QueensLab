@@ -22,7 +22,7 @@ class Source:
     note: str = ""
     order_by: str | None = None  # stable paging key
     tags: tuple = field(default_factory=tuple)
-    kind: str = "socrata"        # socrata | acs | cbp
+    kind: str = "socrata"        # socrata | acs | cbp | overture
     select: str | None = None    # optional SoQL select
     group: str | None = None     # optional SoQL group
     window_by: str | None = None # date column: pull one calendar month at a time
@@ -164,6 +164,20 @@ CONDITIONS = [
                 "(wujg-7c2s) stops at 31 Dec 2024."),
 ]
 
+# ── Open places data (not Socrata) ──────────────────────────────────────
+PLACES = [
+    Source("overture_places", "Overture Maps places (open POI data)",
+           "overturemaps.org", "theme=places/type=place",
+           kind="overture", tags=("business", "local"),
+           note="Every business and place Overture knows in Queens: name, category, "
+                "open/permanently-closed status, website, phone, brand, address, confidence, "
+                "and which contributors (Meta, Microsoft, Foursquare, BrightQuery, "
+                "AllThePlaces...) it came from. Cut to Queens by the 2020 NTA polygons and "
+                "tagged with the NTA. Licences differ per contributor (kept in `licence`): "
+                "CDLA-Permissive-2.0, Apache-2.0 (Foursquare — keep its NOTICE), CC0. "
+                "Latest monthly release found automatically."),
+]
+
 # Census does not use Socrata. api.census.gov now returns a missing-key page.
 # These two are the public files that still answer without a key.
 CENSUS = [
@@ -180,7 +194,7 @@ CENSUS = [
                 "by industry. County totals, not a list of shop names."),
 ]
 
-ALL: list[Source] = BUSINESSES + PROPERTY + GEOGRAPHY + CONDITIONS + CENSUS
+ALL: list[Source] = BUSINESSES + PLACES + PROPERTY + GEOGRAPHY + CONDITIONS + CENSUS
 BY_KEY = {s.key: s for s in ALL}
 
 

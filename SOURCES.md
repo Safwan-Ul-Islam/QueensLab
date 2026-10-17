@@ -24,6 +24,20 @@ Row counts marked **probed** were returned by the live API on 2026-10-17.
 | ✅ **Sidewalk cafes** | [`qcdj-rwhu`](https://data.cityofnewyork.us/resource/qcdj-rwhu.json) | **324** (whole file) | No borough column; filter by ZIP after load. |
 | ✅ **Subway ridership** | [`5wq4-mkjj`](https://data.ny.gov/resource/5wq4-mkjj.json) | **1,171,471** station-hours, 79 stations | 2025 onward, summed per station per hour at the source. The 2020–24 file is [`wujg-7c2s`](https://data.ny.gov/resource/wujg-7c2s.json). |
 
+## Open places data
+
+| Source | Access | Queens | Why it matters |
+|---|---|---|---|
+| ✅ **Overture Maps places** | [GeoParquet on public S3](https://docs.overturemaps.org/guides/places/) (no key) | **80,269** places (54,983 open, 3,617 permanently closed; 39,563 open with a website) | Every business with name, category, status, website, phone, brand. Contributors: Meta, Microsoft, BrightQuery, Foursquare, AllThePlaces. |
+| ⏳ **Foursquare OS Places** (direct) | [Hugging Face](https://huggingface.co/datasets/foursquare/fsq-os-places) — free sign-up | — | Overture already carries Foursquare records; the full set adds created/closed dates. The open mirror on Source Cooperative stops at Nov 2024. |
+
+**Licences:** Overture records are CDLA-Permissive-2.0, CC0-1.0 (AllThePlaces) or Apache-2.0 (Foursquare) — kept per row in `overture_places.licence`.
+Foursquare NOTICE (Apache-2.0 requires keeping it): *Copyright 2024 Foursquare Labs, Inc.*
+
+## Scraped (research only)
+
+`crawl.py` reads businesses' **own** websites with [Firecrawl](https://www.firecrawl.dev) (free plan: ~1,000 pages a month). Results stay in `scraped/` and the bucket's `scraped/` prefix, are never committed, never merged into BizGenome, never used for training. Never Google Maps, Yelp, social media or listing sites.
+
 **Browse for more:** [NYC Open Data](https://opendata.cityofnewyork.us/) · [NY State Open Data](https://data.ny.gov/) ·
 Search the catalog: `https://api.us.socrata.com/api/catalog/v1?domains=data.cityofnewyork.us&q=YOUR+TERM`
 
