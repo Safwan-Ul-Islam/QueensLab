@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import subprocess
 import sys
 import threading
@@ -63,13 +64,49 @@ _lock = threading.Lock()
 
 
 def con(read_only: bool = True):
+    """Every page request, and the public SQL box, runs on one of these.
+
+    ⚠️ read_only stops writes to the DATABASE, not reads of the MACHINE. Until
+    2026-10-17 a query could read any file the server can — its environment,
+    holding the bucket key, included — and `SELECT 1; COPY ... TO ...` wrote
+    files. So: give the connection the bucket key the big tables need (they
+    are views over the bucket), then take away the local disk and the open
+    web, and lock the setting so no query can undo it. Fails closed."""
     import duckdb
     if not DB.exists():
         return None
     try:
-        return duckdb.connect(str(DB), read_only=read_only)
+        c = duckdb.connect(str(DB), read_only=read_only)
     except Exception:
         return None
+    # Connections to one file can share a DuckDB instance; on an instance that
+    # is already locked down these steps fail harmlessly, so each is tolerated
+    # and the end state is TESTED rather than assumed.
+    import gcs
+    if gcs.enabled():
+        try:
+            gcs.attach(c)
+        except Exception:
+            pass
+    # HTTPFileSystem too: otherwise the box fetches any web address FROM the
+    # server. The bucket is gs://, a different file system, and still works.
+    for stmt in ("SET disabled_filesystems='LocalFileSystem,HTTPFileSystem'",
+                 "SET lock_configuration=true"):
+        try:
+            c.execute(stmt)
+        except Exception:
+            pass
+    # current_setting('disabled_filesystems') reads '' even when it is on, so
+    # test the effect: listing the database's own file must be refused.
+    try:
+        c.execute("SELECT count(*) FROM glob(?)", [str(DB)]).fetchone()
+        safe = False
+    except Exception as e:  # noqa: BLE001
+        safe = "disabled" in str(e)
+    if not safe:
+        c.close()
+        return None
+    return c
 
 
 def loaded() -> list[tuple]:
@@ -255,10 +292,12 @@ def home(sql: str = "", result: str = ""):
 
     # ── sources, loaded ones first ───────────────────────────────────────
     ordered = sorted(S.ALL, key=lambda x: (x.key not in have, x.label))
+    got = {k: n for k, n, *_ in rows_log}
     srows = []
     for src in ordered:
         on = src.key in have
-        n = f"{src.probed:,}" if src.probed else "—"
+        # What is actually loaded; the probe figure only until it is.
+        n = f"{got[src.key]:,}" if on else (f"{src.probed:,}" if src.probed else "—")
         note = (src.note or "").replace("⚠️", "").strip()
         srows.append(
             f'<tr><td class="l"><span class="dot{" on" if on else ""}"></span></td>'
@@ -347,6 +386,7 @@ def status():
             "bucket": (f"gs://{__import__('gcs').bucket()}" if __import__('gcs').enabled()
                        else "not configured"),
             "loaded_from": _loaded_from,
+            "commit": (os.environ.get("RENDER_GIT_COMMIT") or "local")[:7],
             "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
@@ -354,6 +394,12 @@ def status():
 async def fetch(key: str):
     if key not in S.BY_KEY and key not in ("core", "all"):
         return JSONResponse({"error": f"unknown source '{key}'"}, status_code=404)
+    # The big ones would run this 512 MB dyno out of memory, or be cut off when
+    # it sleeps. They are pulled on a laptop and reach this page via the bucket.
+    if key == "all" or "local" in getattr(S.BY_KEY.get(key), "tags", ()):
+        return JSONResponse({"error": f"'{key}' is too big to pull on this server. "
+                             "Run fetch.py on a laptop; it reaches this page through "
+                             "the bucket."}, status_code=409)
     with _lock:
         if key in _fetching:
             return {"status": "already running", "key": key}
@@ -374,7 +420,24 @@ async def fetch(key: str):
     asyncio.get_running_loop().run_in_executor(None, run)
     return {"status": "started", "key": key, "poll": "/api/status"}
 
-SAFE = ("select", "with", "describe", "show", "summarize", "pragma_table_info")
+def _one_read(sql: str) -> str | None:
+    """None if `sql` is exactly one read statement; otherwise the reason not.
+
+    ⚠️ This used to check only the first word, so `SELECT 1; COPY ...` passed
+    and DuckDB ran both. DuckDB's own parser decides now. DESCRIBE, SHOW and
+    SUMMARIZE all parse as SELECT."""
+    import duckdb
+    if "duckdb_secrets" in sql.lower():   # shows the bucket key's id
+        return "That function is not available here."
+    try:
+        stmts = duckdb.extract_statements(sql)
+    except Exception as e:  # noqa: BLE001 — a syntax error is shown, not raised
+        return str(e)[:200]
+    if len(stmts) != 1:
+        return "One statement at a time."
+    if stmts[0].type.name != "SELECT":
+        return "Only read queries are allowed (SELECT, WITH, DESCRIBE, SHOW, SUMMARIZE)."
+    return None
 
 
 @app.get("/query", response_class=HTMLResponse)
@@ -388,10 +451,9 @@ def query(sql: str = ""):
     sql = (sql or "").strip().rstrip(";")
     if not sql:
         return home()
-    first = sql.lstrip("( \n\t").split(None, 1)[0].lower() if sql.split() else ""
-    if first not in SAFE:
-        return home(sql, '<div class="empty">Only read queries are allowed '
-                         '(SELECT, WITH, DESCRIBE, SHOW, SUMMARIZE).</div>')
+    why = _one_read(sql)
+    if why:
+        return home(sql, f'<div class="empty">{html.escape(why)}</div>')
     cols, rows = q(sql, limit=200)
     if cols == ["error"]:
         return home(sql, f'<div class="empty">{html.escape(str(rows[0][0]))}</div>')

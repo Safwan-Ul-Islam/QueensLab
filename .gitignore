@@ -4,3 +4,5 @@ queens.duckdb
 __pycache__/
 .venv/
 .env
+raw/*.parts/
+raw/*.partial

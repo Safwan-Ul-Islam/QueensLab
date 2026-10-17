@@ -25,6 +25,12 @@ class Source:
     kind: str = "socrata"        # socrata | acs | cbp
     select: str | None = None    # optional SoQL select
     group: str | None = None     # optional SoQL group
+    window_by: str | None = None # date column: pull one calendar month at a time
+    since: str | None = None     # ...starting here (ISO). Needs window_by.
+
+
+# Tag "local" = too big for Render's free dyno (512 MB, sleeps after 15 idle
+# minutes). Pull on a laptop with fetch.py; the web /fetch endpoint refuses them.
 
 
 # ── Businesses: who is actually trading in Queens ────────────────────────
@@ -70,7 +76,7 @@ PROPERTY = [
     Source("pluto", "PLUTO tax lots",
            "data.cityofnewyork.us", "64uk-42ks",
            where="upper(borough)='QN'", probed=324_483,
-           order_by="bbl", tags=("property",),
+           order_by="bbl", tags=("property", "local"),
            note="Every lot: land use, floor area, year built, commercial sqft. "
                 "⚠️ NOT in --core on purpose: 324k rows with a server-side sort took "
                 "16 minutes measured (2026-10-17), and Render's free dyno sleeps after "
@@ -85,14 +91,16 @@ PROPERTY = [
 
     Source("dob_permits", "DOB permit issuance",
            "data.cityofnewyork.us", "ipu4-2q9a",
-           where="upper(borough)='QUEENS'", probed=841_298,
-           order_by="job__", tags=("property",),
-           note="Big. Build-outs and renovations = businesses opening."),
+           where="borough='QUEENS'", probed=841_308,
+           order_by="job__", tags=("property", "local"),
+           note="Big. Build-outs and renovations = businesses opening. Exact match on "
+                "borough, not upper(): the values are already upper case, and upper() "
+                "stops Socrata using its index."),
 
     Source("dob_now", "DOB NOW build permits",
            "data.cityofnewyork.us", "rbx6-tga4",
            where="upper(borough)='QUEENS'", probed=198_081,
-           order_by="job_filing_number", tags=("property",)),
+           order_by="job_filing_number", tags=("property", "local")),
 
     Source("storefront_vacancy", "LL157 storefront vacancy",
            "data.cityofnewyork.us", "92iy-9c3n",
@@ -125,20 +133,26 @@ GEOGRAPHY = [
 
 # ── Conditions and demand ────────────────────────────────────────────────
 CONDITIONS = [
-    Source("nyc_311", "311 complaints (last 2 years)",
+    Source("nyc_311", "311 complaints (since Oct 2024)",
            "data.cityofnewyork.us", "erm2-nwe9",
-           where="upper(borough)='QUEENS' AND created_date > '2024-10-01T00:00:00'",
-           probed=237_854,
-           order_by="unique_key", tags=("conditions",),
-           note="UNBOUNDED THIS TIMES OUT — 30M+ rows citywide. The date bound is required, "
-                "not optional. 237,854 was the 90-day Queens count when probed."),
+           where="borough='QUEENS'", probed=1_869_933,
+           window_by="created_date", since="2024-10-01T00:00:00",
+           order_by="unique_key", tags=("conditions", "local"),
+           note="UNBOUNDED THIS TIMES OUT — 30M+ rows citywide; the date floor is required. "
+                "Pulled month by month. upper(borough) timed out even on a count; the "
+                "exact match answers in 5s."),
 
-    Source("subway_ridership", "Subway hourly ridership by station",
-           "data.ny.gov", "wujg-7c2s",
-           where=None, probed=None,
-           order_by="transit_timestamp", tags=("movement",),
-           note="CITYWIDE and enormous. Filter to Queens stations after load, and always "
-                "bound the date — see fetch.py --where."),
+    Source("subway_ridership", "Subway riders by station and hour (2025 on)",
+           "data.ny.gov", "5wq4-mkjj",
+           where="borough='Queens'",
+           window_by="transit_timestamp", since="2025-01-01T00:00:00",
+           select=("transit_timestamp, station_complex_id, station_complex, latitude, "
+                   "longitude, sum(ridership) AS riders, sum(transfers) AS transfers"),
+           group="transit_timestamp, station_complex_id, station_complex, latitude, longitude",
+           tags=("movement", "local"),
+           note="One row per Queens station per hour; fare classes and payment methods "
+                "summed at the source. This is the 2025-onward file. The old one "
+                "(wujg-7c2s) stops at 31 Dec 2024."),
 ]
 
 # Census does not use Socrata. api.census.gov now returns a missing-key page.
