@@ -308,6 +308,9 @@ td.l,th.l{text-align:left}
 .cfg input,.cfg select{width:100%}
 .cfg td{padding:4px 6px 4px 0}
 #crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
+.credits{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;font-size:13.5px}
+.credits b{font-size:15px}
+.credits .bad{color:#b42318;font-weight:600}
 .live{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0;padding:12px 14px;
  border:1px solid var(--line);border-radius:10px;background:var(--soft)}
 .live .dot{width:10px;height:10px;border-radius:50%;background:#c3c9d3}
@@ -630,6 +633,19 @@ CRAWL_JS = """<script>
   function live() {
     return api('GET', '/api/crawl/progress').then(function (d) {
       var box = $('crawl-live'), a = d.active, st = d.stats || {}, last = st.last_run;
+      var cb = $('crawl-credits'), cr = d.credits || {}, u = d.usage || {};
+      cb.textContent = '';
+      if (cr.error) {
+        cb.appendChild(el('span', 'Credits could not be read: ' + cr.error +
+          ' — check FIRECRAWL_API_KEY in Render → Environment.', 'bad'));
+      } else {
+        var item = function (label, value) { var s = el('span'); s.appendChild(el('b', value)); s.appendChild(document.createTextNode(' ' + label)); cb.appendChild(s); };
+        item('credits left', (cr.remaining != null ? cr.remaining.toLocaleString() : '—') + (cr.plan ? ' / ' + cr.plan.toLocaleString() : ''));
+        item('used this billing period', (u.this_period || 0).toLocaleString());
+        if (u.this_run != null) item('used by this run so far', (u.this_run || 0).toLocaleString());
+        item('used all time', (u.all_time || 0).toLocaleString());
+        if (cr.period_end) item('renews', cr.period_end.slice(0, 10));
+      }
       if (d.running && a) {
         box.className = 'live running';
         var pct = a.n ? Math.round(100 * (a.completed || 0) / a.n) : 0;
@@ -861,6 +877,7 @@ def render(sql: str = "", result: str = "") -> str:
       </div>
       <div id="crawl-admin" hidden>
         <div class="stats" id="crawl-stats"></div>
+        <div id="crawl-credits" class="credits"></div>
         <div id="crawl-live" class="live idle"><span class="dot"></span><b id="live-title">Idle</b>
           <span id="live-detail" class="muted"></span>
           <div class="bar"><div id="live-bar"></div></div></div>

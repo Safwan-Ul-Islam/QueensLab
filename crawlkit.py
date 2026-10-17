@@ -478,7 +478,18 @@ def _api(method: str, path: str, body=None, timeout: int = 60):
 def credits() -> dict:
     d = _api("GET", "/team/credit-usage").get("data", {})
     return {"remaining": d.get("remainingCredits"), "plan": d.get("planCredits"),
-            "period_end": d.get("billingPeriodEnd")}
+            "period_start": d.get("billingPeriodStart"), "period_end": d.get("billingPeriodEnd")}
+
+
+def usage(cr: dict | None = None) -> dict:
+    """Credits QueensLab itself has used, from its own run records."""
+    rs = runs()
+    start = (cr or {}).get("period_start") or ""
+    total = sum(r.get("credits_used") or 0 for r in rs)
+    period = sum(r.get("credits_used") or 0 for r in rs if (r.get("started") or "") >= start[:19])
+    active = [r for r in rs if not r.get("collected_at")]
+    return {"all_time": total, "this_period": period,
+            "this_run": (active[-1].get("credits_used") or 0) if active else None}
 
 
 def candidates(limit: int, c: dict) -> list[tuple]:
@@ -814,7 +825,11 @@ def progress() -> dict:
         refresh()
     active = [r for r in runs() if not r.get("collected_at")]
     a = active[-1] if active else None
-    return {"running": bool(a),
+    try:
+        cr = credits()
+    except Exception as e:  # noqa: BLE001 — say why, in the panel
+        cr = {"error": jobs.clean(str(e))}
+    return {"credits": cr, "usage": usage(cr), "running": bool(a),
             "active": {k: a.get(k) for k in ("run_id", "kind", "status", "n", "completed", "credits_used",
                                              "credits_est", "started", "expires_at")} if a else None,
             "stats": stats()}
