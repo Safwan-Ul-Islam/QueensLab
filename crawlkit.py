@@ -88,8 +88,9 @@ DEFAULT_CONFIG = {
          "description": "Regular opening hours as stated, e.g. 'Mon-Fri 9am-7pm; Sat 10am-5pm'. Empty if not stated."},
         {"name": "price_level", "type": "text",
          "description": "One of $, $$, $$$, $$$$ judged from prices shown on the site. Empty if no prices are shown."},
-        {"name": "price_examples", "type": "list",
-         "description": "Up to 5 items or services WITH their price as shown, e.g. 'Haircut $25'."},
+        {"name": "prices", "type": "prices",
+         "description": "Up to 10 items or services with their price exactly as shown: item, price "
+                        "as a number, currency (e.g. USD), unit if any (e.g. 'per hour')."},
         {"name": "services_or_products", "type": "list",
          "description": "The main services or products offered, up to 10."},
         {"name": "online_ordering_or_booking", "type": "yes/no",
@@ -103,14 +104,58 @@ DEFAULT_CONFIG = {
         {"name": "shows_queens_address", "type": "yes/no",
          "description": "Does the page show a street address in Queens, New York (or a Queens neighbourhood)?"},
         {"name": "year_established", "type": "number", "description": "Year founded, if stated."},
+        # added 2026-10-18 (user: the 7 suggestions + 5 more)
+        {"name": "street_address", "type": "text",
+         "description": "The street address of THIS location as written on the page."},
+        {"name": "branch_name", "type": "text",
+         "description": "For a business with several locations, the name of this branch (e.g. 'Flushing')."},
+        {"name": "locations_count", "type": "number",
+         "description": "How many locations the business says it has, if stated."},
+        {"name": "is_chain_or_franchise", "type": "yes/no",
+         "description": "Is this part of a chain or franchise (several locations or a franchise brand)?"},
+        {"name": "opening_soon_notice", "type": "text",
+         "description": "ONLY a 'grand opening', 'opening soon' or 'now open' announcement. Empty otherwise."},
+        {"name": "now_hiring", "type": "yes/no", "description": "Does the site say it is hiring?"},
+        {"name": "service_modes", "type": "list",
+         "description": "ONLY the ways of being served that the page itself mentions, using these words: "
+                        "dine-in, takeout, catering, delivery, appointments, walk-ins, online only. "
+                        "Empty if the page mentions none. Never list them all by default."},
+        {"name": "delivery_apps", "type": "list",
+         "description": "Delivery or ordering apps it links to or names (e.g. DoorDash, Uber Eats, Grubhub)."},
+        {"name": "payment_options", "type": "list",
+         "description": "Only payment methods the page names, e.g. cash, cards, SNAP/EBT, Apple Pay. "
+                        "Empty if none are named."},
+        {"name": "open_late", "type": "yes/no",
+         "description": "Open after 10pm on any day, or 24 hours, according to the stated hours?"},
+        {"name": "wheelchair_accessible", "type": "yes/no", "description": "Only if the site states it."},
+        {"name": "parking", "type": "text",
+         "description": "Only what the page says about PARKING for cars (own lot, street, validated). "
+                        "Empty if parking is not mentioned. Pickup or delivery is not parking."},
+        {"name": "seating", "type": "text", "description": "Seating capacity or description, if stated."},
+        {"name": "outdoor_space", "type": "yes/no",
+         "description": "Outdoor seating, patio, garden or yard, if stated."},
+        {"name": "relevant_page_links", "type": "list",
+         "description": "Up to 5 links on this page to its menu, services, prices, hours or locations pages."},
     ],
+    "evidence": True,
+    "follow_links": 1,
     "filters": {"categories": [], "ntas": [], "min_confidence": 0.7},
     "recrawl_days": 60,
     "default_batch": 200,
     "include_blocked": False,
 }
 FIELD_TYPES = {"text": {"type": "string"}, "number": {"type": "number"},
-               "yes/no": {"type": "boolean"}, "list": {"type": "array", "items": {"type": "string"}}}
+               "yes/no": {"type": "boolean"}, "list": {"type": "array", "items": {"type": "string"}},
+               # item, amount, currency and unit as separate values — comparable across shops
+               "prices": {"type": "array", "items": {"type": "object", "properties": {
+                   "item": {"type": "string"}, "price": {"type": "number"},
+                   "currency": {"type": "string"}, "unit": {"type": "string"}}}}}
+EVIDENCE = {"type": "array", "description":
+            "For each field you filled, the field name and the SHORT exact quote from the page "
+            "that supports it.", "items": {"type": "object", "properties": {
+                "field": {"type": "string"}, "quote": {"type": "string"}}}}
+LINKS_FIELD = "relevant_page_links"     # read by the follow-up step
+LINK_WORDS = re.compile(r"menu|service|price|pricing|rates|hours|about|location|contact|order|catering", re.I)
 
 
 # ── small documents (config, run state), kept in the bucket and locally ───
@@ -155,8 +200,8 @@ def validate_config(c: dict) -> dict:
     if mode not in CREDITS:
         raise ValueError("mode must be 'structured' or 'text'")
     fields = c.get("fields", out["fields"])
-    if not isinstance(fields, list) or not 1 <= len(fields) <= 25:
-        raise ValueError("between 1 and 25 fields")
+    if not isinstance(fields, list) or not 1 <= len(fields) <= 40:
+        raise ValueError("between 1 and 40 fields")
     clean = []
     for f in fields:
         name = re.sub(r"[^a-z0-9_]", "_", str(f.get("name", "")).strip().lower())[:40].strip("_")
@@ -177,6 +222,8 @@ def validate_config(c: dict) -> dict:
         "recrawl_days": max(1, min(365, int(c.get("recrawl_days", out["recrawl_days"])))),
         "default_batch": max(1, min(1000, int(c.get("default_batch", out["default_batch"])))),
         "include_blocked": bool(c.get("include_blocked", out["include_blocked"])),
+        "evidence": bool(c.get("evidence", out["evidence"])),
+        "follow_links": max(0, min(2, int(c.get("follow_links", out["follow_links"])))),
     })
     return out
 
@@ -188,8 +235,15 @@ def save_config(c: dict) -> dict:
 
 
 def schema(c: dict) -> dict:
-    return {"type": "object", "properties": {
-        f["name"]: {**FIELD_TYPES[f["type"]], "description": f["description"]} for f in c["fields"]}}
+    props = {f["name"]: {**FIELD_TYPES[f["type"]], "description": f["description"]} for f in c["fields"]}
+    if c.get("evidence"):
+        props["evidence"] = EVIDENCE
+    return {"type": "object", "properties": props}
+
+
+def per_site(c: dict) -> int:
+    """Credits per business, counting the follow-up pages it MAY use."""
+    return CREDITS[c["mode"]] * (1 + (c.get("follow_links", 0) if c["mode"] == "structured" else 0))
 
 
 # ── tables in scraped/: kept locally, mirrored to the bucket ──────────────
@@ -202,7 +256,8 @@ FACT_COLS = [("run_id", "VARCHAR"), ("place_id", "VARCHAR"), ("name", "VARCHAR")
              ("category", "VARCHAR"), ("nta2020", "VARCHAR"), ("url", "VARCHAR"),
              ("final_url", "VARCHAR"), ("http_status", "INTEGER"), ("title", "VARCHAR"),
              ("mode", "VARCHAR"), ("facts", "VARCHAR"), ("markdown", "VARCHAR"),
-             ("error", "VARCHAR"), ("fetched_at", "TIMESTAMP")]
+             ("error", "VARCHAR"), ("fetched_at", "TIMESTAMP"),
+             ("base_run", "VARCHAR"), ("page_kind", "VARCHAR")]
 
 
 REFRESH_S = 300   # the other machine may have written newer results to the bucket
@@ -445,6 +500,61 @@ def candidates(limit: int, c: dict) -> list[tuple]:
         ORDER BY hash(s.place_id) LIMIT {int(limit)}""", params)
 
 
+def _submit(urls: list[str], c: dict) -> dict:
+    formats = (["markdown"] if c["mode"] == "text" else
+               [{"type": "json", "schema": schema(c), "prompt": c["prompt"]}])
+    r = _api("POST", "/batch/scrape", {"urls": urls, "formats": formats, "onlyMainContent": True,
+                                       "ignoreInvalidURLs": True, "timeout": 30000})
+    if not r.get("id"):
+        raise FirecrawlError(f"Firecrawl did not start the batch: {str(r)[:200]}")
+    return r
+
+
+def _follow(run: dict) -> dict | None:
+    """After a homepage run: read up to follow_links linked pages per business
+    (menu, services, prices...), same site only. A second batch at Firecrawl."""
+    from urllib.parse import urljoin
+    c = config()
+    k = c.get("follow_links", 0)
+    if run.get("kind") != "home" or c["mode"] != "structured" or not k:
+        return None
+    rows = query("""SELECT place_id, name, category, nta2020, coalesce(final_url, url), facts
+                    FROM web_facts WHERE run_id = ? AND facts IS NOT NULL""", [run["run_id"]])
+    picks, seen = [], set()
+    for pid, name, cat, nta, base, facts in rows:
+        try:
+            links = json.loads(facts).get(LINKS_FIELD) or []
+        except (ValueError, AttributeError):
+            links = []
+        dom = _domain(base)
+        good = []
+        for link in links if isinstance(links, list) else []:
+            u = urljoin(base, str(link).strip())
+            if (u.startswith("http") and _domain(u) == dom and u.rstrip("/") != base.rstrip("/")
+                    and u not in seen and not re.search(r"\.(pdf|jpg|png|zip)$", u, re.I)):
+                good.append(u)
+        good.sort(key=lambda u: not LINK_WORDS.search(u))      # menu/services/prices first
+        for u in good[:k]:
+            seen.add(u)
+            picks.append([pid, name, cat, nta, u])
+    if not picks:
+        return None
+    need = len(picks) * CREDITS["structured"]
+    have = credits().get("remaining")
+    if have is not None and need > have:
+        jobs.Job(run["job_id"]).warn(f"linked pages skipped: {need:,} credits needed, {have:,} left")
+        return None
+    r = _submit([p[4] for p in picks], c)
+    job = jobs.Job(jobs.queue("web_facts", jobs.new_run(), "follow-up")).start(step=REMOTE_STEP)
+    job.warn(f"{len(picks)} linked pages of run {run['run_id']} · up to {need:,} credits")
+    return {"run_id": uuid.uuid4().hex[:8], "batch_id": r["id"], "job_id": job.id, "mode": "structured",
+            "n": len(picks), "credits_est": need,
+            "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": "scraping", "completed": 0, "credits_used": 0, "expires_at": None,
+            "collected_at": None, "invalid": r.get("invalidURLs") or [],
+            "kind": "follow", "parent": run["run_id"], "urls": picks}
+
+
 def runs() -> list[dict]:
     return doc_get("crawl_runs", [])
 
@@ -467,24 +577,21 @@ def start(limit: int | None = None, origin: str = "cli") -> dict:
         picks = candidates(limit or c["default_batch"], c)
         if not picks:
             raise FirecrawlError("no alive, own-site businesses left to read (run the site check first?)")
-        need = len(picks) * CREDITS[c["mode"]]
+        need = len(picks) * per_site(c)
         have = credits().get("remaining")
         if have is not None and need > have:
             raise FirecrawlError(f"this run needs {need:,} credits; {have:,} remain")
-        formats = (["markdown"] if c["mode"] == "text" else
-                   [{"type": "json", "schema": schema(c), "prompt": c["prompt"]}])
-        r = _api("POST", "/batch/scrape", {"urls": [p[4] for p in picks], "formats": formats,
-                                           "onlyMainContent": True, "ignoreInvalidURLs": True,
-                                           "timeout": 30000})
-        if not r.get("id"):
-            raise FirecrawlError(f"Firecrawl did not start the batch: {str(r)[:200]}")
+        r = _submit([p[4] for p in picks], c)
         job = jobs.Job(jobs.queue("web_facts", jobs.new_run(), origin)).start(step=REMOTE_STEP)
-        job.warn(f"{len(picks)} sites · {c['mode']} · ~{need:,} credits")
+        job.warn(f"{len(picks)} sites · {c['mode']} · up to {need:,} credits"
+                 + (f" (incl. up to {c['follow_links']} linked page per site)" if c["follow_links"]
+                    and c["mode"] == "structured" else ""))
         run = {"run_id": uuid.uuid4().hex[:8], "batch_id": r["id"], "job_id": job.id,
                "mode": c["mode"], "n": len(picks), "credits_est": need,
                "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "status": "scraping", "completed": 0, "credits_used": 0, "expires_at": None,
                "collected_at": None, "invalid": r.get("invalidURLs") or [],
+               "kind": "home", "parent": None,
                "urls": [list(p) for p in picks]}
         rs = runs(); rs.append(run); _save_runs(rs)
         return {k: v for k, v in run.items() if k != "urls"}
@@ -520,6 +627,19 @@ def refresh(collect_done: bool = True) -> list[dict]:
                     job.fail(f"Firecrawl reported '{run['status']}' after {run['completed']} of {run['n']}"
                              f" — {n} results kept")
             out.append({k: v for k, v in run.items() if k != "urls"})
+        followups = []
+        for run in rs:
+            if run.get("collected_at") and run.get("kind") == "home" and not run.get("followed"):
+                run["followed"] = True
+                changed = True
+                try:
+                    f = _follow(run)
+                except FirecrawlError as e:
+                    jobs.Job(run["job_id"]).warn(f"linked pages not read: {e}")
+                    f = None
+                if f:
+                    followups.append(f)
+        rs.extend(followups)
         if changed:
             _save_runs(rs)
     return out
@@ -540,7 +660,8 @@ def _collect(run: dict, first: dict) -> int:
             rows.append([run["run_id"], pid, name, cat, nta, url, meta.get("url"), meta.get("statusCode"),
                          (meta.get("title") or "")[:300], run["mode"],
                          json.dumps(facts) if facts is not None else None,
-                         md[:20_000] if md else None, meta.get("error"), now])
+                         md[:20_000] if md else None, meta.get("error"), now,
+                         run.get("parent") or run["run_id"], run.get("kind") or "home"])
         nxt = page.get("next")
         if not nxt:
             break
@@ -568,14 +689,67 @@ def stop_run() -> dict:
     return next((r for r in done if r["run_id"] == run["run_id"]), {"run_id": run["run_id"]})
 
 
+def _empty(v) -> bool:
+    return v is None or v == "" or v == [] or v == {}
+
+
+def _visits() -> dict:
+    """{place_id: [visit, ...]} oldest first; a visit = one base run's pages
+    (homepage first, then linked pages) merged: a field empty on the homepage
+    is filled from a linked page; evidence quotes are pooled."""
+    rows = query("""SELECT place_id, name, category, nta2020, url, page_kind, facts, fetched_at,
+                           coalesce(base_run, run_id) AS visit
+                    FROM web_facts WHERE facts IS NOT NULL AND place_id IS NOT NULL
+                    ORDER BY place_id, fetched_at, page_kind = 'follow'""")
+    out: dict = {}
+    for pid, name, cat, nta, url, kind, facts, at, visit in rows:
+        try:
+            f = json.loads(facts) or {}
+        except ValueError:
+            continue
+        vs = out.setdefault(pid, [])
+        if not vs or vs[-1]["visit"] != visit:
+            vs.append({"visit": visit, "name": name, "category": cat, "nta2020": nta, "url": url,
+                       "pages": [], "facts": {}, "evidence": [], "at": at})
+        v = vs[-1]
+        v["pages"].append(url)
+        v["at"] = max(v["at"], at)
+        for k, val in f.items():
+            if k == "evidence":
+                v["evidence"] += [e for e in (val or []) if isinstance(e, dict)]
+            elif _empty(v["facts"].get(k)) and not _empty(val):
+                v["facts"][k] = val
+    return out
+
+
+def _show(v) -> str | None:
+    if _empty(v):
+        return None
+    if isinstance(v, list):
+        return "; ".join(
+            " ".join(str(x.get(k)) for k in ("item", "price", "currency", "unit") if x.get(k) not in (None, ""))
+            if isinstance(x, dict) else str(x) for x in v)
+    return str(v)
+
+
 def results(limit: int = 100) -> tuple[list[str], list[tuple]]:
-    """The latest facts, one column per configured field."""
+    """One row per business: its latest visit (homepage + linked pages), one
+    column per field, the evidence quotes, and which fields changed since the
+    previous visit (empty until a business has been read twice)."""
     c = config()
-    names = [f["name"] for f in c["fields"]]
-    cols = ", ".join(f"json_extract_string(facts, '$.{n}') AS \"{n}\"" for n in names)
-    rows = query(f"""SELECT name, nta2020, category, url, {cols}, fetched_at FROM web_facts
-                     WHERE facts IS NOT NULL ORDER BY fetched_at DESC LIMIT {int(limit)}""")
-    return ["name", "nta2020", "category", "url", *names, "fetched_at"], rows
+    names = [f["name"] for f in c["fields"] if f["name"] != LINKS_FIELD]
+    out = []
+    for pid, vs in _visits().items():
+        last, prev = vs[-1], (vs[-2] if len(vs) > 1 else None)
+        changed = [n for n in names if prev is not None
+                   and _show(last["facts"].get(n)) != _show(prev["facts"].get(n))]
+        evidence = "; ".join(f"{e.get('field')}: \"{str(e.get('quote'))[:120]}\"" for e in last["evidence"][:12])
+        out.append((last["name"], last["nta2020"], last["category"], " | ".join(last["pages"]),
+                    *[_show(last["facts"].get(n)) for n in names], evidence or None,
+                    ", ".join(changed) if changed else None, last["at"]))
+    out.sort(key=lambda r: r[-1], reverse=True)
+    return (["name", "nta2020", "category", "pages_read", *names, "evidence", "changed_since_last_read",
+             "fetched_at"], out[:int(limit)])
 
 
 def overview() -> dict:

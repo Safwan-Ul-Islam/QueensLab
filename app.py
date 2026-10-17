@@ -566,11 +566,11 @@ CRAWL_JS = """<script>
     (o.can_pull || []).forEach(function (p) { var li = el('li'); li.appendChild(el('b', p[0])); li.appendChild(document.createTextNode(' — ' + p[1])); ul.appendChild(li); });
   }).catch(function () { $('crawl-overview').textContent = 'Not available right now.'; });
 
-  var cfg = null, per = {structured: 5, text: 1};
+  var cfg = null, per = {structured: 5, text: 1}, types = ['text', 'number', 'yes/no', 'list', 'prices'];
   function fieldRow(f) {
     var tr = el('tr');
     var name = el('input'); name.value = f.name || ''; name.placeholder = 'field_name';
-    var type = el('select'); ['text', 'number', 'yes/no', 'list'].forEach(function (t) { var o = el('option', t); o.value = t; if (t === f.type) o.selected = true; type.appendChild(o); });
+    var type = el('select'); types.forEach(function (t) { var o = el('option', t); o.value = t; if (t === f.type) o.selected = true; type.appendChild(o); });
     var desc = el('input'); desc.value = f.description || ''; desc.placeholder = 'Describe exactly what to find';
     var del = el('button', '×', 'ghost'); del.type = 'button'; del.onclick = function () { tr.remove(); };
     [name, type, desc, del].forEach(function (x) { var td = el('td'); td.appendChild(x); tr.appendChild(td); });
@@ -578,14 +578,15 @@ CRAWL_JS = """<script>
   }
   function estimate() {
     var m = $('cfg-mode').value, k = parseInt($('crawl-limit').value || '0', 10);
-    $('crawl-estimate').textContent = '≈ ' + (k * per[m]).toLocaleString() + ' credits';
+    var f = m === 'structured' ? parseInt($('cfg-follow').value || '0', 10) : 0;
+    $('crawl-estimate').textContent = 'up to ' + (k * per[m] * (1 + f)).toLocaleString() + ' credits';
   }
   function load() {
     msg('Loading…');
     return api('GET', '/api/crawl/admin').then(function (d) {
       $('crawl-admin').hidden = false; msg('');
       try { localStorage.setItem('ql_token', token); } catch (e) {}
-      per = d.credits_per_page || per; cfg = d.config;
+      per = d.credits_per_page || per; cfg = d.config; types = d.field_types || types;
       var s = $('crawl-stats'); s.textContent = '';
       stat(s, d.credits && d.credits.remaining != null ? d.credits.remaining.toLocaleString() : '—', 'Firecrawl credits left');
       stat(s, (d.crawlable_sites || 0).toLocaleString(), 'alive sites to read');
@@ -599,6 +600,7 @@ CRAWL_JS = """<script>
       $('cfg-mode').value = cfg.mode; $('cfg-prompt').value = cfg.prompt;
       $('cfg-recrawl').value = cfg.recrawl_days; $('cfg-conf').value = cfg.filters.min_confidence;
       $('cfg-blocked').checked = !!cfg.include_blocked;
+      $('cfg-follow').value = cfg.follow_links || 0; $('cfg-evidence').checked = !!cfg.evidence;
       $('cfg-cats').value = (cfg.filters.categories || []).join(', '); $('cfg-ntas').value = (cfg.filters.ntas || []).join(', ');
       $('cfg-fields').textContent = ''; cfg.fields.forEach(fieldRow);
       $('crawl-limit').value = cfg.default_batch; estimate();
@@ -615,7 +617,7 @@ CRAWL_JS = """<script>
   }
   $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); };
   if (token) { $('crawl-token').value = token; }
-  $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate;
+  $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-follow').oninput = estimate;
   $('crawl-start').onclick = function () {
     var k = parseInt($('crawl-limit').value, 10);
     if (!confirm('Send ' + k + ' sites to Firecrawl? ' + $('crawl-estimate').textContent + '.')) return;
@@ -634,7 +636,8 @@ CRAWL_JS = """<script>
     var split = function (v) { return v.split(',').map(function (x) { return x.trim(); }).filter(Boolean); };
     act('Saving…', 'POST', '/api/crawl/config', {mode: $('cfg-mode').value, prompt: $('cfg-prompt').value, fields: fields,
       recrawl_days: parseInt($('cfg-recrawl').value, 10), default_batch: parseInt($('crawl-limit').value, 10),
-      include_blocked: $('cfg-blocked').checked,
+      include_blocked: $('cfg-blocked').checked, evidence: $('cfg-evidence').checked,
+      follow_links: parseInt($('cfg-follow').value || '0', 10),
       filters: {categories: split($('cfg-cats').value), ntas: split($('cfg-ntas').value), min_confidence: parseFloat($('cfg-conf').value)}}, 'Saved.');
   };
   $('crawl-csv').onclick = function (ev) {
@@ -819,6 +822,8 @@ def render(sql: str = "", result: str = "") -> str:
           <label>Re-read after <input id="cfg-recrawl" type="number" min="1" max="365"> days</label>
           <label>Min. confidence <input id="cfg-conf" type="number" min="0" max="1" step="0.05"></label>
           <label><input id="cfg-blocked" type="checkbox"> also try sites with a bot wall (often fail, still cost)</label>
+          <label>Linked pages per site <input id="cfg-follow" type="number" min="0" max="2"></label>
+          <label><input id="cfg-evidence" type="checkbox"> keep the quote behind each fact</label>
         </div>
         <label class="blk">Instructions to the extractor<textarea id="cfg-prompt" rows="2"></textarea></label>
         <table class="cfg"><thead><tr><th class="l">Field</th><th class="l">Type</th>
