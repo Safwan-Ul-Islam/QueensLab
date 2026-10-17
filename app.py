@@ -27,6 +27,16 @@ sys.path.insert(0, str(HERE))
 import sources as S  # noqa: E402
 
 app = FastAPI(title="QueensLab", docs_url=None, redoc_url=None)
+
+
+@app.on_event("startup")
+def _restore():
+    """Render's free disk is empty on every boot; the Parquet in the repo is
+    not. Rebuild from it before the first request is served."""
+    if not DB.exists():
+        import fetch
+        n = fetch.rebuild_from_parquet()
+        print(f"[queenslab] rebuilt {n:,} rows from committed parquet", flush=True)
 _fetching: set[str] = set()
 _lock = threading.Lock()
 

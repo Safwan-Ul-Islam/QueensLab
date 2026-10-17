@@ -124,7 +124,43 @@ def save(key: str, tmp: Path, n_rows: int) -> Path:
                 [key, n_rows, datetime.now(timezone.utc), path.stat().st_size])
     con.close()
     tmp.unlink(missing_ok=True)
+    _manifest_put(key, n_rows)
     return path
+
+
+MANIFEST = RAW / "_manifest.json"
+
+
+def _manifest_put(key: str, n_rows: int) -> None:
+    m = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    m[key] = {"rows": n_rows, "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    MANIFEST.write_text(json.dumps(m, indent=1, sort_keys=True) + "\n")
+
+
+def rebuild_from_parquet(db: Path = DB) -> int:
+    """Recreate the DuckDB file from the committed Parquet in raw/.
+
+    This is what makes storage work on Render's free plan. The disk is wiped
+    on every restart, but raw/*.parquet is IN THE REPO (~19 MB), so each boot
+    rebuilds every table in about five seconds. Refreshing the data means:
+    fetch locally, commit raw/, push — Render redeploys with it.
+    """
+    import duckdb
+    m = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    con = duckdb.connect(str(db))
+    con.execute("""CREATE TABLE IF NOT EXISTS _fetch_log
+                   (key VARCHAR, rows BIGINT, fetched_at TIMESTAMP, bytes BIGINT)""")
+    total = 0
+    for f in sorted(RAW.glob("*.parquet")):
+        key = f.stem
+        con.execute(f'CREATE OR REPLACE TABLE "{key}" AS SELECT * FROM read_parquet(?)', [str(f)])
+        n = con.execute(f'SELECT count(*) FROM "{key}"').fetchone()[0]
+        con.execute("DELETE FROM _fetch_log WHERE key = ?", [key])
+        con.execute("INSERT INTO _fetch_log VALUES (?,?,?,?)",
+                    [key, n, (m.get(key) or {}).get("fetched_at"), f.stat().st_size])
+        total += n
+    con.close()
+    return total
 
 
 def already(key: str) -> tuple[int, str] | None:

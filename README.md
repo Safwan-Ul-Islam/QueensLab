@@ -31,9 +31,34 @@ uvicorn app:app --reload        # the page, at localhost:8000
 
 Render blueprint is in `render.yaml` — free plan, Python, `uvicorn app:app`.
 
-**Note on the free plan:** the disk is wiped on restart, so data is re-fetched
-rather than stored. Trigger a pull with `POST /fetch/core`, or move to a paid
-plan with a persistent disk if you want it to survive.
+## Storage — how the data survives Render's free plan
+
+The free disk is wiped on every restart, so the data **ships with the code**:
+
+```
+raw/*.parquet        ← committed to git (~19 MB, zstd-compressed)
+raw/_manifest.json   ← committed: row counts + when each table was fetched
+queens.duckdb        ← NOT committed; rebuilt from the Parquet on every boot (~5s)
+```
+
+**To refresh the data:**
+
+```bash
+python fetch.py --core            # or --only <table>, or --all
+git add raw/ && git commit -m "Refresh Queens data" && git push
+```
+
+Then redeploy on Render. (The service was created from a public repo URL, which
+has no webhook — pushes do **not** auto-deploy. Use *Manual Deploy* in the
+dashboard.)
+
+`POST /fetch/<key>` still works on the live service, but anything it pulls is
+lost at the next restart. Fetch locally and commit instead.
+
+**When this stops being enough:** GitHub rejects files over 100 MB, and the repo
+grows with every refresh. If the data outgrows that, move the Parquet to object
+storage (Cloudflare R2 or S3) and read it remotely — DuckDB can query Parquet
+over HTTPS directly.
 
 ## Files
 
