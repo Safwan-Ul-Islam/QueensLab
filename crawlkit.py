@@ -163,9 +163,23 @@ def _q(s) -> str:
     return "'" + str(s).replace("'", "''") + "'"
 
 
+_docs: dict = {}          # name -> (read at, value)
+DOC_TTL = 30              # seconds a small document is trusted from memory
+
+
 def doc_get(name: str, default):
     """The newest copy: the bucket if configured (shared by laptop and server),
-    else the local file."""
+    else the local file. Cached for DOC_TTL seconds: the panel polls every 6 s,
+    and each bucket read costs ~0.5-3 s — one status refresh used to take ~18 s."""
+    hit = _docs.get(name)
+    if hit and time.time() - hit[0] < DOC_TTL:
+        return json.loads(json.dumps(hit[1]))
+    value = _doc_read(name, default)
+    _docs[name] = (time.time(), value)
+    return json.loads(json.dumps(value))
+
+
+def _doc_read(name: str, default):
     if gcs.enabled():
         try:
             rows = gcs.read_rows(f"{PREFIX}/{name}.parquet", timeout_s=10)
@@ -184,6 +198,7 @@ def doc_put(name: str, obj) -> None:
     (OUT / f"{name}.json").write_text(text)
     if gcs.enabled():
         gcs.write_rows(f"{PREFIX}/{name}.parquet", [("doc", "VARCHAR")], [[text]])
+    _docs[name] = (time.time(), json.loads(text))
 
 
 def config() -> dict:
@@ -324,7 +339,7 @@ def query(sql: str, params=None) -> list[tuple]:
     c = duckdb.connect()
     c.execute("SET enable_progress_bar=false")
     try:
-        if DB.exists():
+        if DB.exists() and re.search(r"\bq\.", sql):    # only when the query needs the sources
             c.execute(f"ATTACH {_q(DB)} AS q (READ_ONLY)")
             if gcs.enabled():
                 gcs.attach(c)
@@ -679,6 +694,7 @@ def _collect(run: dict, first: dict) -> int:
         page = _api("GET", nxt)
     if rows:
         upsert("web_facts", FACT_COLS, rows, ["run_id", "url"])
+        _stored["at"] = 0.0               # recount on the next status refresh
     return len(rows)
 
 
@@ -773,6 +789,27 @@ def _fill(visits: list[dict], names: list[str]) -> dict:
     return {n: sum(1 for v in visits if has(v["facts"].get(n), n)) for n in names}
 
 
+_stored = {"at": 0.0, "n": None}
+
+
+def _stored_count():
+    """Rows in the bucket's web_facts file, read from its footer; once a minute."""
+    if not gcs.enabled():
+        return None
+    if time.time() - _stored["at"] < 60:
+        return _stored["n"]
+    con = gcs._scratch(timeout_s=15)
+    try:
+        _stored["n"] = con.execute("SELECT sum(num_rows) FROM parquet_file_metadata(?)",
+                                   [gcs.url("web_facts.parquet", PREFIX)]).fetchone()[0]
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        con.close()
+    _stored["at"] = time.time()
+    return _stored["n"]
+
+
 def stats() -> dict:
     """What has been read, stored and filled — overall and for the latest run."""
     c = config()
@@ -781,16 +818,7 @@ def stats() -> dict:
     latest = [vs[-1] for vs in vis.values()]
     pages, with_facts, errors = query(
         "SELECT count(*), count(facts), count(*) FILTER (WHERE facts IS NULL) FROM web_facts")[0]
-    stored = None
-    if gcs.enabled():
-        con = gcs._scratch(timeout_s=15)
-        try:
-            stored = con.execute("SELECT sum(num_rows) FROM parquet_file_metadata(?)",
-                                 [gcs.url("web_facts.parquet", PREFIX)]).fetchone()[0]
-        except Exception:  # noqa: BLE001
-            stored = None
-        finally:
-            con.close()
+    stored = _stored_count()
     fill = _fill(latest, names)
     total_filled = sum(fill.values())
     rs = runs()

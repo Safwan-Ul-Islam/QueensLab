@@ -613,7 +613,6 @@ CRAWL_JS = """<script>
           (r.status || '') + ' ' + (r.completed || 0) + '/' + r.n + ' · ' + (r.credits_used || 0) + ' credits' +
           (r.collected_at ? ' · collected' : (r.expires_at ? ' · results kept until ' + r.expires_at.slice(0, 16).replace('T', ' ') : '')), 'muted'));
       });
-      live();
       $('cfg-mode').value = cfg.mode; $('cfg-prompt').value = cfg.prompt;
       $('cfg-recrawl').value = cfg.recrawl_days; $('cfg-conf').value = cfg.filters.min_confidence;
       $('cfg-blocked').checked = !!cfg.include_blocked;
@@ -633,6 +632,7 @@ CRAWL_JS = """<script>
   function live() {
     return api('GET', '/api/crawl/progress').then(function (d) {
       var box = $('crawl-live'), a = d.active, st = d.stats || {}, last = st.last_run;
+      $('crawl-admin').hidden = false;
       var cb = $('crawl-credits'), cr = d.credits || {}, u = d.usage || {};
       cb.textContent = '';
       if (cr.error) {
@@ -687,10 +687,14 @@ CRAWL_JS = """<script>
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden && wasRunning) live(); });
   function act(p, method, path, body, done) {
-    msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); }).catch(function (e) { msg(e.message); });
+    msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); live(); }).catch(function (e) { msg(e.message); });
   }
-  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); };
+  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); };
   if (token) { $('crawl-token').value = token; }
+  // A remembered password: opening the panel loads it, no Unlock press needed.
+  $('crawl-panel').addEventListener('toggle', function () {
+    if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); }
+  });
   $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-follow').oninput = estimate;
   $('crawl-start').onclick = function () {
     var k = parseInt($('crawl-limit').value, 10);
@@ -877,7 +881,7 @@ def render(sql: str = "", result: str = "") -> str:
       </div>
       <div id="crawl-admin" hidden>
         <div class="stats" id="crawl-stats"></div>
-        <div id="crawl-credits" class="credits"></div>
+        <div id="crawl-credits" class="credits"><span class="muted">Loading credits…</span></div>
         <div id="crawl-live" class="live idle"><span class="dot"></span><b id="live-title">Idle</b>
           <span id="live-detail" class="muted"></span>
           <div class="bar"><div id="live-bar"></div></div></div>
