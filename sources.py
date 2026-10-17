@@ -72,9 +72,10 @@ PROPERTY = [
            where="upper(borough)='QN'", probed=324_483,
            order_by="bbl", tags=("property",),
            note="Every lot: land use, floor area, year built, commercial sqft. "
-                "⚠️ NOT in --core on purpose: 324k rows with a server-side sort takes "
-                "~80 minutes, and Render's free dyno sleeps after 15 idle minutes, so it "
-                "can never finish there. Pull it locally: python fetch.py --only pluto"),
+                "⚠️ NOT in --core on purpose: 324k rows with a server-side sort took "
+                "16 minutes measured (2026-10-17), and Render's free dyno sleeps after "
+                "15 idle minutes, so it will not reliably finish there. Pull it locally: "
+                "python fetch.py --only pluto"),
 
     Source("dof_sales", "DOF rolling property sales",
            "data.cityofnewyork.us", "usep-8jbt",
@@ -111,7 +112,9 @@ GEOGRAPHY = [
            "data.cityofnewyork.us", "9nt8-h7nd",
            where="upper(boroname)='QUEENS'", probed=82,
            order_by="nta2020", tags=("geo", "core"),
-           note="82 NTAs. The right unit for 'which Queens neighbourhood' analysis."),
+           note="82 NTAs in the 2020 scheme (QN0101…). ⚠️ DCWP licences and "
+                "nta_population use the 2010 scheme (QN61, QN01) — the codes do NOT "
+                "join across. Use nta_population.nta_name for names alongside DCWP."),
 
     Source("nta_population", "Population by NTA",
            "data.cityofnewyork.us", "swpk-hqdp",

@@ -86,12 +86,17 @@ PANELS = [
         FROM dcwp_licences WHERE license_status='Active'
         GROUP BY 1 ORDER BY licences DESC LIMIT 12"""),
 
+    # Names come from nta_population, NOT the `ntas` table: DCWP and
+    # nta_population both use the 2010 NTA scheme (QN61), while `ntas` is the
+    # 2020 scheme (QN0101). Joining the two matched exactly zero rows.
     ("Density per 10k residents, by neighbourhood", "dcwp_licences,nta_population", """
-        WITH pop AS (SELECT nta_code, max(TRY_CAST(population AS BIGINT)) p
+        WITH pop AS (SELECT nta_code, max(nta_name) nta_name,
+                            max(TRY_CAST(population AS BIGINT)) p
                      FROM nta_population GROUP BY 1 HAVING p > 2000),
              biz AS (SELECT nta, count(*) n FROM dcwp_licences
                      WHERE license_status='Active' AND nta IS NOT NULL GROUP BY 1)
-        SELECT b.nta AS nta, b.n AS businesses, pop.p AS population,
+        SELECT pop.nta_name AS neighbourhood, b.nta AS code,
+               b.n AS businesses, pop.p AS population,
                round(10000.0*b.n/pop.p,1) AS per_10k
         FROM biz b JOIN pop ON pop.nta_code=b.nta
         ORDER BY per_10k DESC LIMIT 12"""),
@@ -118,40 +123,71 @@ PANELS = [
 
 CSS = """
 *{box-sizing:border-box}
+:root{--ink:#15171c;--muted:#697180;--faint:#98a0ac;--line:#eceef2;--soft:#f7f9fc;
+      --accent:#2b52e0;--good:#16855a}
 body{margin:0;font:15px/1.6 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
- color:#15171c;background:#fff;-webkit-font-smoothing:antialiased;letter-spacing:-.006em}
-.wrap{max-width:1100px;margin:0 auto;padding:0 24px 80px}
-header{border-bottom:1px solid #eceef2;margin-bottom:34px}
-.hin{max-width:1100px;margin:0 auto;padding:26px 24px}
-h1{font-size:26px;font-weight:650;letter-spacing:-.028em;margin:0}
-.sub{color:#697180;font-size:14.5px;margin:6px 0 0}
-.wall{display:inline-block;margin-top:14px;font-size:12.5px;color:#3c6e4f;
- background:#eaf6ef;border:1px solid #cfe8da;border-radius:999px;padding:5px 13px}
-h2{font-size:16px;font-weight:650;letter-spacing:-.02em;margin:34px 0 12px}
+ color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased;letter-spacing:-.006em}
+.wrap{max-width:1120px;margin:0 auto;padding:0 28px}
+
+/* header */
+header{border-bottom:1px solid var(--line);background:#fff}
+.hin{max-width:1120px;margin:0 auto;padding:30px 28px 0}
+h1{font-size:27px;font-weight:650;letter-spacing:-.03em;margin:0}
+.lede{color:var(--muted);font-size:15px;margin:7px 0 0;max-width:62ch}
+.badge{display:inline-flex;align-items:center;gap:6px;margin-top:14px;font-size:12.5px;
+ color:#2a5d3f;background:#eaf6ef;border:1px solid #cfe8da;border-radius:999px;padding:5px 13px}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}
+
+/* stat cards */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:26px 0 0}
+.stat{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:15px 17px}
+.stat b{display:block;font-size:25px;font-weight:650;letter-spacing:-.03em;line-height:1.1;
+ font-variant-numeric:tabular-nums}
+.stat span{display:block;font-size:11px;font-weight:600;letter-spacing:.05em;
+ text-transform:uppercase;color:var(--faint);margin-top:6px}
+
+/* section nav */
+nav{display:flex;gap:4px;margin:24px 0 -1px;position:sticky;top:0;background:#fff;z-index:5;
+ padding-top:4px}
+nav a{font-size:13.5px;font-weight:600;color:var(--muted);text-decoration:none;
+ padding:10px 15px;border-bottom:2px solid transparent}
+nav a:hover{color:var(--ink);border-bottom-color:var(--line)}
+
+section{padding:38px 0 6px;scroll-margin-top:52px}
+h2{font-size:19px;font-weight:650;letter-spacing:-.024em;margin:0 0 4px}
+.note{color:var(--muted);font-size:13.5px;margin:0 0 16px;max-width:76ch}
+
+/* cards */
+.card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 0 14px}
+.card h3{font-size:14.5px;font-weight:650;margin:0 0 12px;letter-spacing:-.015em}
+
 table{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
 th{text-align:left;font-size:10.5px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
- color:#8a92a0;border-bottom:1.5px solid #15171c;padding:0 10px 7px 0}
-td{padding:7px 10px 7px 0;border-bottom:1px solid #f1f3f6}
+ color:var(--faint);border-bottom:1.5px solid var(--ink);padding:0 10px 7px 0;white-space:nowrap}
+td{padding:7px 10px 7px 0;border-bottom:1px solid #f4f6f9;vertical-align:top}
+tr:last-child td{border-bottom:0}
 td:not(:first-child),th:not(:first-child){text-align:right}
-/* numbers right, prose left — the notes column was inheriting the number rule */
 td.l,th.l{text-align:left}
-.muted{color:#8a92a0}
-.empty{background:#fafbfd;border:1px dashed #dde2ea;border-radius:10px;padding:22px;
- color:#697180;font-size:14px}
-code{font:12.5px 'SFMono-Regular',Menlo,monospace;background:#f3f5f9;padding:2px 6px;border-radius:4px}
-.note{color:#697180;font-size:13.5px;margin:0 0 12px}
-textarea{width:100%;font:13px 'SFMono-Regular',Menlo,monospace;padding:12px 14px;
- border:1px solid #dde2ea;border-radius:9px;resize:vertical;background:#fbfcfe;color:#15171c}
-textarea:focus{outline:2px solid #2b52e0;outline-offset:1px;border-color:transparent}
-button{margin-top:10px;font:600 14px 'Inter',sans-serif;color:#fff;background:#15171c;
- border:0;border-radius:999px;padding:11px 24px;cursor:pointer}
+.muted{color:var(--muted)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#dde2ea}
+.dot.on{background:var(--good)}
+
+.empty{background:var(--soft);border:1px dashed #dde2ea;border-radius:11px;padding:20px;
+ color:var(--muted);font-size:14px}
+code{font:12.5px 'SFMono-Regular',Menlo,monospace;background:#f1f4f9;padding:2px 6px;
+ border-radius:4px;color:#3c4254}
+textarea{width:100%;font:13px/1.55 'SFMono-Regular',Menlo,monospace;padding:13px 15px;
+ border:1px solid #dde2ea;border-radius:10px;resize:vertical;background:var(--soft);color:var(--ink)}
+textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+button{margin-top:11px;font:600 14px 'Inter',sans-serif;color:#fff;background:var(--ink);
+ border:0;border-radius:999px;padding:11px 25px;cursor:pointer}
 button:hover{background:#000}
-a{color:#2b52e0;text-decoration:none}
+a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
-.chips{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0 0}
-.chip{font-size:12px;color:#5d6475;background:#f6f8fb;border:1px solid #e6eaf0;
- border-radius:999px;padding:4px 11px}
-.chip.on{color:#2a5d3f;background:#eaf6ef;border-color:#cfe8da}
+footer{margin:46px 0 70px;padding-top:20px;border-top:1px solid var(--line);
+ color:var(--faint);font-size:12.5px}
+@media (max-width:820px){.stats{grid-template-columns:repeat(2,1fr)}
+ nav{overflow-x:auto}.wrap,.hin{padding-left:18px;padding-right:18px}}
 """
 
 
@@ -167,69 +203,104 @@ def table_html(cols, rows) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def home(sql: str = "", result: str = ""):
-    have = {k for k, *_ in loaded()}
-    total = sum(r[1] for r in loaded())
-    chips = "".join(
-        f'<span class="chip{" on" if s.key in have else ""}">{html.escape(s.label)}</span>'
-        for s in S.ALL)
+    rows_log = loaded()
+    have = {k for k, *_ in rows_log}
+    total = sum(r[1] for r in rows_log)
+    last = max((r[3] for r in rows_log), default=None)
 
-    body = []
-    for title, needs, sql in PANELS:
+    # ── findings, one card each ──────────────────────────────────────────
+    cards = []
+    for title, needs, q_sql in PANELS:
         if not all(t in have for t in needs.split(",")):
-            body.append(f"<h2>{html.escape(title)}</h2>"
-                        f'<div class="empty">Not loaded yet — run '
-                        f'<code>python fetch.py --only {needs.split(",")[0]}</code></div>')
+            missing = [t for t in needs.split(",") if t not in have][0]
+            cards.append(
+                f'<div class="card"><h3>{html.escape(title)}</h3>'
+                f'<div class="empty">Needs <code>{html.escape(missing)}</code> — '
+                f'pull it from the Sources tab below.</div></div>')
             continue
-        cols, rows = q(sql)
-        body.append(f"<h2>{html.escape(title)}</h2>" + table_html(cols, rows))
+        cols, rws = q(q_sql)
+        cards.append(f'<div class="card"><h3>{html.escape(title)}</h3>'
+                     + table_html(cols, rws) + "</div>")
 
+    # ── sources, loaded ones first ───────────────────────────────────────
+    ordered = sorted(S.ALL, key=lambda x: (x.key not in have, x.label))
     srows = []
-    for src in S.ALL:
+    for src in ordered:
         on = src.key in have
         n = f"{src.probed:,}" if src.probed else "—"
+        note = (src.note or "").replace("⚠️", "").strip()
         srows.append(
-            f'<tr><td>{"✅" if on else "○"}</td>'
+            f'<tr><td class="l"><span class="dot{" on" if on else ""}"></span></td>'
             f'<td class="l"><a href="{source_link(src)}" target="_blank" rel="noopener">'
             f'{html.escape(src.label)}</a></td>'
-            f'<td><code>{html.escape(src.key)}</code></td><td>{n}</td>'
-            f'<td class="muted l">{html.escape((src.note or "")[:120])}</td></tr>')
-    src_table = ('<table><thead><tr><th></th><th>Source</th><th>Table</th>'
-                 '<th>Queens rows</th><th class="l">Notes</th></tr></thead><tbody>'
+            f'<td class="l"><code>{html.escape(src.key)}</code></td><td>{n}</td>'
+            f'<td class="muted l" title="{html.escape(note)}">'
+            f'{html.escape(note[:88])}{"…" if len(note) > 88 else ""}</td></tr>')
+    src_table = ('<table><thead><tr><th class="l"></th><th class="l">Source</th>'
+                 '<th class="l">Table</th><th>Queens rows</th>'
+                 '<th class="l">Notes</th></tr></thead><tbody>'
                  + "".join(srows) + "</tbody></table>")
 
-    state = (f"{len(have)} of {len(S.ALL)} sources · {total:,} Queens rows"
-             if have else "No data yet")
-    return f"""<!doctype html><html><head><meta charset="utf-8">
+    stats = f"""<div class="stats">
+      <div class="stat"><b>{len(have)}<small style="font-size:15px;color:#98a0ac;font-weight:500">/{len(S.ALL)}</small></b>
+        <span>sources loaded</span></div>
+      <div class="stat"><b>{total:,}</b><span>Queens rows</span></div>
+      <div class="stat"><b>82</b><span>neighbourhoods</span></div>
+      <div class="stat"><b>{html.escape(last or "—")}</b><span>last fetched</span></div>
+    </div>"""
+
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QueensLab</title>
+<title>QueensLab — Queens business research</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;650&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&display=swap" rel="stylesheet">
 <style>{CSS}</style></head><body>
+
 <header><div class="hin">
   <h1>QueensLab</h1>
-  <p class="sub">Queens business &amp; demographic research — {state}</p>
-  <span class="wall">Standalone · no connection to BizGenome</span>
-  <div class="chips">{chips}</div>
+  <p class="lede">Open data on every business, building and neighbourhood in Queens,
+     pulled from public records and queryable here.</p>
+  <span class="badge">Standalone research — not connected to BizGenome</span>
+  {stats}
+  <nav>
+    <a href="#findings">Findings</a>
+    <a href="#sources">Sources</a>
+    <a href="#query">Query</a>
+    <a href="/api/status">API</a>
+  </nav>
 </div></header>
-<div class="wrap">{''.join(body)}
-  <h2>Where this data comes from</h2>
-  <p class="note">Every source below is <b>free and public</b>. Nothing is bought, and
-  nothing here is used to train BizGenome's model.</p>
-  {src_table}
 
-  <h2>Query it yourself</h2>
-  <p class="note">Read-only SQL over the tables above. Try
-  <code>SELECT business_category, count(*) FROM dcwp_licences GROUP BY 1 ORDER BY 2 DESC</code></p>
-  <form method="get" action="/query">
-    <textarea name="sql" rows="3" placeholder="SELECT * FROM dcwp_licences LIMIT 20">{sql}</textarea>
-    <button type="submit">Run</button>
-  </form>
-  {result}
+<div class="wrap">
+  <section id="findings">
+    <h2>Findings</h2>
+    <p class="note">Computed live from the tables below. Each card re-runs its query on load.</p>
+    {''.join(cards)}
+  </section>
 
-  <h2>Refresh</h2>
-  <div class="empty">On Render's free plan the disk is wiped on restart, so data is
-  re-fetched rather than stored. Pull with <code>POST /fetch/core</code>, or run
-  <code>python fetch.py --core</code> locally.</div>
+  <section id="sources">
+    <h2>Sources</h2>
+    <p class="note">All {len(S.ALL)} are <b>free and public</b> — city, state and federal records.
+      Nothing is bought, and nothing here trains BizGenome's model. A green dot means loaded.</p>
+    {src_table}
+    <p class="note" style="margin-top:14px">Pull more with
+      <code>POST /fetch/&lt;table&gt;</code>, or <code>python fetch.py --core</code> locally.</p>
+  </section>
+
+  <section id="query">
+    <h2>Query</h2>
+    <p class="note">Read-only SQL over the loaded tables. Results cap at 200 rows.</p>
+    <form method="get" action="/query">
+      <textarea name="sql" rows="3"
+        placeholder="SELECT business_category, count(*) AS n FROM dcwp_licences GROUP BY 1 ORDER BY n DESC LIMIT 10">{html.escape(sql)}</textarea>
+      <button type="submit">Run query</button>
+    </form>
+    {result}
+  </section>
+
+  <footer>Queens open data · DuckDB · no external database ·
+    <a href="https://github.com/Safwan-Ul-Islam/QueensLab" target="_blank" rel="noopener">source</a>
+  </footer>
 </div></body></html>"""
 
 
