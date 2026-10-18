@@ -311,6 +311,7 @@ td.l,th.l{text-align:left}
 #crawl-results table.preview{table-layout:fixed}
 #crawl-results table.preview td{white-space:nowrap;font-size:12.5px;overflow:hidden;text-overflow:ellipsis}
 #crawl-results table.preview th:first-child{width:26%}
+@media (max-width:600px){#crawl-results table.preview{min-width:640px}}
 .credits{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;font-size:13.5px}
 .credits b{font-size:15px}
 .credits .bad{color:#b42318;font-weight:600}
@@ -355,10 +356,10 @@ button.toggle:hover{background:#f3f5f8;color:var(--ink)}
  background:linear-gradient(120deg,var(--fc-900),var(--fc-800) 30%,var(--fc-700) 55%,#B4380D 75%,var(--fc-800));
  background-size:260% 260%;animation:fcflow 14s ease-in-out infinite;box-shadow:0 10px 30px -14px rgba(194,65,12,.55)}
 #websites .fc-hero h2{color:#fff;font-size:21px}
-#websites .fc-hero .note{color:rgba(255,255,255,.93);margin:6px 0 0;max-width:80ch}
+#websites .fc-hero .note{color:#fff;margin:6px 0 0;max-width:80ch}
 #websites .fc-hero .note b{color:#fff}
 #websites .fc-tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
- background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:3px 10px;margin-bottom:8px}
+ background:#fff;color:var(--fc-800);border-radius:999px;padding:3px 10px;margin-bottom:8px}
 @keyframes fcflow{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 @media (prefers-reduced-motion:reduce){#websites .fc-hero{animation:none}}
 #websites .stat{background:#fff;border:1px solid var(--fc-200);box-shadow:inset 0 3px 0 var(--fc-600)}
@@ -449,6 +450,7 @@ def collection_html(limit: int = 200) -> str:
     must cost at most that row, not the whole page."""
     try:
         rows = jobs.listing(limit)
+        capped = len(rows) >= limit
     except Exception as e:  # noqa: BLE001
         return (f'<div id="jobs" data-active="0"><div class="empty">The collection list could '
                 f'not be read just now ({html.escape(type(e).__name__)}). Reload in a minute.'
@@ -474,7 +476,8 @@ def collection_html(limit: int = 200) -> str:
                 '<th>Last activity</th><th>Finished</th><th class="l">GCS upload</th>'
                 '<th class="l">Error</th></tr></thead><tbody>'
                 + "".join(trs) + "</tbody></table></div>")
-    return f'<div id="jobs" data-active="{1 if active else 0}" data-total="{len(trs) if rows else 0}">{body}</div>'
+    return (f'<div id="jobs" data-active="{1 if active else 0}" data-total="{len(trs) if rows else 0}" '
+            f'data-capped="{1 if rows and capped else 0}">{body}</div>')
 
 
 def _job_row(j: dict) -> str:
@@ -681,7 +684,8 @@ CRAWL_JS = """<script>
       var s = $('crawl-stats'); s.textContent = '';
       stat(s, d.credits && d.credits.remaining != null ? d.credits.remaining.toLocaleString() : '—', 'Firecrawl credits left');
       stat(s, (d.crawlable_sites || 0).toLocaleString(), 'alive sites to read');
-      stat(s, d.credits && d.credits.period_end ? d.credits.period_end.slice(0, 10) : '—', 'credits renew');
+      var pe = d.credits && d.credits.period_end ? new Date(d.credits.period_end) : null;
+      stat(s, pe ? pe.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', timeZone: 'UTC'}) : '—', 'credits renew');
       var runs = $('crawl-runs'); runs.textContent = '';
       (d.runs || []).slice().reverse().slice(0, 5).forEach(function (r) {
         runs.appendChild(el('div', r.started.slice(0, 16).replace('T', ' ') + ' UTC · ' + r.n + ' sites · ' + r.mode + ' · ' +
@@ -844,7 +848,8 @@ JOBS_JS = r"""<script>
     var more = box ? box.querySelectorAll('tr.more').length : 0;
     btn.hidden = more === 0;
     var open = sec.classList.contains('show-all');
-    btn.textContent = open ? 'Show the latest 5' : 'Show all ' + total;
+    var capped = box && box.getAttribute('data-capped') === '1';
+    btn.textContent = open ? 'Show the latest 5' : (capped ? 'Show the latest ' + total : 'Show all ' + total);
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
   btn.onclick = function () { sec.classList.toggle('show-all'); label(); };
