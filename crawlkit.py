@@ -645,8 +645,9 @@ def start(limit: int | None = None, origin: str = "cli") -> dict:
         if ex == "claude":
             import ask
             if not ask.has_key():
-                raise FirecrawlError("Claude reads the facts, but no Anthropic key is set (ANTHROPIC_API_KEY) — "
-                                     "set it, or choose Firecrawl AI under Requirements")
+                why = ask.OFF_MESSAGE if not ask.CLAUDE_ON else "no Anthropic key is set (ANTHROPIC_API_KEY)"
+                raise FirecrawlError(f"Claude reads the facts, but {why} — choose Firecrawl AI or "
+                                     "Page text only under Requirements")
         need = len(picks) * per_site(c)
         have = credits().get("remaining")
         if have is not None and need > have:

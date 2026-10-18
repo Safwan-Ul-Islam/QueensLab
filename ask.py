@@ -45,11 +45,21 @@ class AskError(Exception):
     pass
 
 
+# Claude is DISCONNECTED from QueensLab (user, 2026-10-18): the key is shared with
+# BizGenome, so the key itself stays live and QueensLab simply never uses it.
+# Every Claude call here (Query-box chat, website fact-reading) goes through _key().
+# To reconnect: set QUEENSLAB_CLAUDE=on (Render env / .env), or change the default below.
+CLAUDE_ON = (os.environ.get("QUEENSLAB_CLAUDE") or "off").strip().lower() == "on"
+OFF_MESSAGE = "Claude is switched off for QueensLab for now (QUEENSLAB_CLAUDE=off)"
+
+
 def has_key() -> bool:
-    return any(os.environ.get(n) for n in KEY_NAMES)
+    return CLAUDE_ON and any(os.environ.get(n) for n in KEY_NAMES)
 
 
 def _key() -> str:
+    if not CLAUDE_ON:
+        raise AskError(OFF_MESSAGE)
     k = next((os.environ[n] for n in KEY_NAMES if os.environ.get(n)), None)
     if not k:
         raise AskError("no Anthropic key on this server (ANTHROPIC_API_KEY in Render → Environment)")
