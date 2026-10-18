@@ -102,10 +102,12 @@ names — password). Each query reads the latest saved crawl results. Typed SQL 
 CSV download; clickable examples per button.
 Structured runs keep each page's full text too (no extra credits).
 
-**Ask in plain English** (both Query boxes, `ask.py`): Claude writes one SQL query from the
-question, it runs on the real tables, and the page shows the SQL beside the result — nothing is
-answered from the model's memory. Needs the panel password and `ANTHROPIC_API_KEY`; ~3k tokens
-of table description per question (cached), a daily cap of 300 questions (`ASK_DAILY_LIMIT`).
+**Chat** (the Query box, `ask.py`): ask in plain words; Claude writes one SQL query, it runs on the
+selected data, then Claude explains the RESULT in plain English — using only its numbers — and
+suggests three follow-up questions. The thread is remembered ("and which of those…") until
+New chat; switching data set starts a new one. Any number in an answer that the result doesn't
+contain is flagged on the page. The SQL and data sit under each answer. Needs the panel password
+and `ANTHROPIC_API_KEY`; two Claude calls a question (~2–4¢); daily cap `ASK_DAILY_LIMIT`.
 
 The control panel (Websites → Control panel) needs the password in `FETCH_TOKEN`
 and `FIRECRAWL_API_KEY`, both in Render's Environment tab. Results stay in

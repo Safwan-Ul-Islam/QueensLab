@@ -333,6 +333,24 @@ td.l,th.l{text-align:left}
 .seg button.on{background:var(--ink);color:#fff}
 #q-examples button{font-weight:500}
 #q-out td{white-space:normal;min-width:100px;font-size:12.5px}
+.chat{display:flex;flex-direction:column;gap:10px;margin:10px 0 4px}
+.chat:empty{display:none}
+.msg{max-width:88%;border-radius:14px;padding:11px 14px;font-size:14.5px;line-height:1.55;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--soft);border:1px solid var(--line);border-bottom-left-radius:4px;white-space:normal}
+.msg.bot .text{white-space:pre-wrap}
+.msg.bot .flag{margin-top:8px;font-size:12.5px;color:#9a5b00;background:#fff4e0;border-radius:8px;padding:6px 9px}
+.msg.bot .sugg{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.msg.bot .sugg button{margin:0;background:#fff;color:var(--ink);border:1px solid #d5dbe4;font-weight:500;
+ font-size:12.5px;padding:6px 12px;border-radius:999px;text-align:left}
+.msg.bot .sugg button:hover{background:var(--soft);border-color:#b9c1cd}
+.msg.bot details{margin-top:10px;font-size:12.5px}
+.msg.bot details summary{cursor:pointer;color:var(--muted);font-weight:600}
+.msg.bot pre{white-space:pre-wrap;font:12px 'SFMono-Regular',Menlo,monospace;background:#fff;border:1px solid var(--line);
+ border-radius:8px;padding:8px 10px;margin:8px 0}
+.msg.bot .meta{font-size:11.5px;color:var(--faint);margin-top:6px}
+.msg.thinking{color:var(--muted);font-style:italic}
+.chatbar span{font-size:12.5px;max-width:70ch}
 .ask{display:flex;gap:8px;margin:8px 0}
 .ask input{flex:1;font:16px 'Inter',sans-serif;padding:15px 18px;border:1.5px solid #cfd5df;
  border-radius:12px;min-height:54px}
@@ -917,6 +935,7 @@ QUERY_JS = r"""<script>
     }).catch(function () {});
   }
   function setScope(s) {
+    if (typeof thread !== 'undefined' && s !== scope && thread.length) { thread = []; save(); redraw(); }
     scope = s;
     try { localStorage.setItem('ql_scope', s); } catch (e) {}
     ['free', 'firecrawl', 'mixed'].forEach(function (x) { $('scope-' + x).className = x === s ? 'on' : ''; });
@@ -951,13 +970,70 @@ QUERY_JS = r"""<script>
     $('q-msg').textContent = 'Running…'; $('q-out').textContent = '';
     post('/api/query', {sql: sql, scope: scope}, scope !== 'free').then(show).catch(fail);
   };
+  // ── the chat: a thread of questions and grounded answers ──
+  var thread = [];
+  try { thread = JSON.parse(sessionStorage.getItem('ql_chat') || '[]'); } catch (e) { thread = []; }
+  function save() { try { sessionStorage.setItem('ql_chat', JSON.stringify(thread.slice(-8))); } catch (e) {} }
+  function bubbleUser(text) { $('chat').appendChild(el('div', text, 'msg user')); }
+  function bubbleBot(d) {
+    var b = el('div', null, 'msg bot');
+    b.appendChild(el('div', d.answer_text || d.why || d.error || 'No answer.', 'text'));
+    if (d.error && d.answer_text == null) { var e = el('div', d.error, 'flag'); b.appendChild(e); }
+    if (d.unsupported && d.unsupported.length) {
+      b.appendChild(el('div', 'Not found in the data: ' + d.unsupported.join(', ') + ' — treat these with care.', 'flag'));
+    }
+    if (d.suggestions && d.suggestions.length) {
+      var sg = el('div', null, 'sugg');
+      d.suggestions.forEach(function (s) {
+        var x = el('button', s); x.type = 'button';
+        x.onclick = function () { $('ask-q').value = s; ask(); };
+        sg.appendChild(x);
+      });
+      b.appendChild(sg);
+    }
+    if (d.sql) {
+      var det = el('details'), sm = el('summary', 'SQL and data (' + ((d.rows || []).length) + ' rows' + (d.truncated ? ', first 200' : '') + ')');
+      det.appendChild(sm); det.appendChild(el('pre', d.sql));
+      if (d.rows && d.rows.length) {
+        var wrap = el('div', null, 'scroll'), t = el('table'), hr = el('tr');
+        d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
+        var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
+        d.rows.slice(0, 50).forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
+        t.appendChild(tb); wrap.appendChild(t); det.appendChild(wrap);
+      }
+      var edit = el('button', 'Open in the SQL box', 'ghost'); edit.type = 'button';
+      edit.onclick = function () { $('sql-box').value = d.sql; last = d; show({columns: d.columns, rows: d.rows, truncated: d.truncated}); $('sql-box').scrollIntoView({behavior: 'smooth', block: 'center'}); };
+      det.appendChild(edit);
+      b.appendChild(det);
+    }
+    var tk = d.tokens || {};
+    if (d.model) b.appendChild(el('div', d.model + ' · ' + ((tk.input || 0) + (tk.cache_read || 0)).toLocaleString() + ' in / ' + (tk.output || 0) + ' out tokens', 'meta'));
+    $('chat').appendChild(b);
+    return b;
+  }
+  function redraw() {
+    $('chat').textContent = '';
+    thread.forEach(function (t) { bubbleUser(t.q); bubbleBot(t.d); });
+  }
   function ask() {
     var qtext = $('ask-q').value.trim(); if (!qtext) return;
-    $('q-msg').textContent = 'Thinking… Claude is writing the query.'; $('q-out').textContent = '';
+    $('ask-q').value = '';
+    bubbleUser(qtext);
+    var wait = el('div', 'Thinking… writing the query, running it on the data, then reading the result.', 'msg bot thinking');
+    $('chat').appendChild(wait); wait.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     $('ask-b').disabled = true;
-    post('/api/ask', {question: qtext, scope: scope}, true).then(show).catch(fail)
-      .then(function () { $('ask-b').disabled = false; });
+    var history = thread.map(function (t) { return {q: t.q, sql: t.d.sql || '', answer: t.d.answer_text || ''}; });
+    post('/api/ask', {question: qtext, scope: scope, history: history}, true).then(function (d) {
+      wait.remove();
+      thread.push({q: qtext, d: d}); save();
+      bubbleBot(d).scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }).catch(function (e) {
+      wait.remove();
+      bubbleBot({error: e.message, answer_text: e.message});
+    }).then(function () { $('ask-b').disabled = false; $('ask-q').focus(); });
   }
+  $('chat-new').onclick = function () { thread = []; save(); redraw(); $('ask-q').focus(); };
+  redraw();
   $('ask-b').onclick = ask;
   $('ask-q').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') ask(); });
   $('q-csv').onclick = function (ev) {
@@ -1196,10 +1272,13 @@ def render(sql: str = "", result: str = "") -> str:
     </div>
     <p class="note" id="scope-note"></p>
     <p class="note" id="scope-status"></p>
-    <div class="ask"><input id="ask-q" placeholder="Ask in plain English — e.g. Which 5 neighbourhoods have the most restaurants per resident?">
+    <div id="chat" class="chat"></div>
+    <div class="ask"><input id="ask-q" placeholder="Ask anything about Queens — e.g. Where would a new bakery face the least competition?">
       <button type="button" id="ask-b">Ask</button></div>
-    <p class="note">Ask: Claude writes the SQL, it runs on the selected data, and you see both
-      (needs the control panel password — it uses Anthropic credits). Or write SQL yourself below.</p>
+    <div class="pnl-row chatbar"><button type="button" id="chat-new" class="ghost">New chat</button>
+      <span class="muted">Claude writes the query, runs it on the selected data, then explains the result
+        and suggests what to ask next. Numbers not found in the data are flagged. Needs the control
+        panel password (about 2–4 cents a question). Or write SQL yourself below.</span></div>
     <div class="pnl-row" id="q-examples"></div>
     <textarea id="sql-box" rows="5"
       placeholder="SELECT name, restaurants_per_10k FROM nta_profile ORDER BY 2 DESC LIMIT 10">{html.escape(sql)}</textarea>
@@ -1473,6 +1552,7 @@ async def ask_question(request: Request):
     body = await request.json()
     scope = body.get("scope") if body.get("scope") in SCOPES else "free"
     question = body.get("question") or ""
+    history = body.get("history") if isinstance(body.get("history"), list) else []
 
     def go():
         if scope == "free":
@@ -1486,14 +1566,14 @@ async def ask_question(request: Request):
                     raise ValueError(rows[0][0])
                 return cols, rows
             try:
-                out = A.answer(question, scope, c, _one_read, run)
+                out = A.chat(question, scope, history, c, _one_read, run)
             finally:
                 c.close()
         else:
             dc = _ck().analysis_db(scope)
             try:
-                out = A.answer(question, scope, dc, _one_read,
-                               lambda sql: _run_analysis(sql, A.ROW_LIMIT + 1, scope))
+                out = A.chat(question, scope, history, dc, _one_read,
+                             lambda sql: _run_analysis(sql, A.ROW_LIMIT + 1, scope))
             finally:
                 dc.close()
         out["rows"] = [[None if v is None else str(v) for v in r] for r in out["rows"]]
