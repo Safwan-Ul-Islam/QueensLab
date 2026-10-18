@@ -572,7 +572,7 @@ def _submit(urls: list[str], c: dict) -> dict:
 def _follow(run: dict) -> dict | None:
     """After a homepage run: read up to follow_links linked pages per business
     (menu, services, prices...), same site only. A second batch at Firecrawl."""
-    from urllib.parse import urljoin
+    from urllib.parse import urldefrag, urljoin
     c = config()
     k = c.get("follow_links", 0)
     if run.get("kind") != "home" or c["mode"] != "structured" or not k:
@@ -588,8 +588,9 @@ def _follow(run: dict) -> dict | None:
         dom = _domain(base)
         good = []
         for link in links if isinstance(links, list) else []:
-            u = urljoin(base, str(link).strip())
-            if (u.startswith("http") and _domain(u) == dom and u.rstrip("/") != base.rstrip("/")
+            u = urldefrag(urljoin(base, str(link).strip()))[0]    # "/#contact" is the same page
+            if (u.startswith("http") and _domain(u) == dom
+                    and u.rstrip("/") != urldefrag(base)[0].rstrip("/")
                     and u not in seen and not re.search(r"\.(pdf|jpg|png|zip)$", u, re.I)):
                 good.append(u)
         good.sort(key=lambda u: not LINK_WORDS.search(u))      # menu/services/prices first
