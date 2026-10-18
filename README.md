@@ -96,9 +96,10 @@ result and the error. Shown on the page (Collection), at `/api/jobs`, and by
    bucket so the laptop and the server share them. Structured mode costs 5
    credits a page, text mode 1.
 
-The control panel also has a **private Query box**: `web_latest` (one row per business,
-a typed column per field), `web_facts` (every page, with its full text), `site_checks`, and every
-public table as `q.<table>` — read-only, 500 rows, with clickable examples and CSV download.
+**One Query box, three buttons:** *Free data* (the public tables, open to everyone), *Firecrawl data*
+(`web_latest`, `web_facts`, `site_checks` — password) and *Mixed* (both, public tables under their own
+names — password). Each query reads the latest saved crawl results. Typed SQL or a plain-English question;
+CSV download; clickable examples per button.
 Structured runs keep each page's full text too (no extra credits).
 
 **Ask in plain English** (both Query boxes, `ask.py`): Claude writes one SQL query from the

@@ -4,10 +4,10 @@ Claude only WRITES the query. The answer is that query's result over the
 stored tables, shown next to the SQL it ran — so every number can be traced,
 and nothing is made up ("Math decides. AI only explains").
 
-Two scopes:
-    public   the public tables (the page's Query box)
-    crawl    the crawled website data + every public table as q.<table>
-             (the control panel's Query box)
+Three scopes, the Query box's three buttons:
+    free       the public tables only
+    firecrawl  the crawled website data only
+    mixed      both, the public tables under their own names
 
 Costs money (Anthropic API), so the web endpoint needs the panel password,
 and a daily cap stops a runaway. Key: ANTHROPIC_API_KEY (or QUEENSLAB_ANTHROPIC_KEY).
@@ -65,7 +65,10 @@ using only the tables listed below. Rules:
 - Neighbourhoods: the 82 2020 NTAs (codes like QN0101). Their names and per-resident figures are in
   nta_profile (code, name). DCWP `nta` and nta_population use OLD 2010 codes (like QN61) that do NOT
   match 2020 codes — never join those to nta_profile.code.
-- Prefer nta_profile for neighbourhood comparisons: it already has per-10k and per-1k rates.
+- Prefer nta_profile for neighbourhood comparisons: it already has per-10k and per-1k rates. For any
+  "per resident / per capita" ranking use those *_per_10k / *_per_1k columns (they are NULL where fewer
+  than 1,000 people live) and keep kind = 'residential' — never divide by tiny populations yourself
+  (parks, airports and cemeteries have a handful of residents and would top every ranking).
 - Add LIMIT {limit} unless the result is an aggregate with few rows. Give columns readable names.
 - If the question cannot be answered from these tables, return empty SQL and say why.
 Reply with exactly: <sql>...</sql><why>one plain-English sentence on what the query does</why>"""
@@ -83,12 +86,15 @@ The crawled website tables (research only):
 - site_checks: the free website check, one row per business: status is one of alive, alive_js, blocked,
   dead (domain gone), parked, hijacked (spam), platform (not their own site), error, unreachable;
   nta2020, ntaname, category, website, domain, reason, checked_at.
-- Every public table is under the q. prefix (q.nta_profile, q.overture_places, q.nyc_311, ...)."""
+"""
+MIXED_NOTE = """
+- The public tables are also available under their own names (nta_profile, overture_places, ...):
+  join crawled businesses to neighbourhoods with web_latest.nta2020 = nta_profile.code."""
 
 
 def _describe(con, prefix: str = "") -> list[str]:
     """table: col1, col2 (TYPE), ... — compact; types shown only when not VARCHAR."""
-    where = "table_catalog = 'q'" if prefix else "table_catalog = 'memory' OR table_catalog NOT IN ('q','system','temp')"
+    where = "table_catalog = 'q'" if prefix else "table_catalog NOT IN ('q', 'system', 'temp')"
     rows = con.execute(f"""SELECT table_name, column_name, data_type FROM information_schema.columns
                            WHERE ({where}) AND table_name NOT LIKE '\\_%' ESCAPE '\\'
                            ORDER BY table_name, ordinal_position""").fetchall()
@@ -105,15 +111,19 @@ def _describe(con, prefix: str = "") -> list[str]:
     return out
 
 
+SCOPES = ("free", "firecrawl", "mixed")
+
+
 def schema_text(scope: str, con) -> str:
     hit = _schemas.get(scope)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
-    if scope == "crawl":
-        text = (GUIDE.format(limit=ROW_LIMIT) + CRAWL_GUIDE + "\n\nTABLES:\n"
-                + "\n".join(_describe(con)) + "\n" + "\n".join(_describe(con, "q.")))
-    else:
-        text = GUIDE.format(limit=ROW_LIMIT) + "\n\nTABLES:\n" + "\n".join(_describe(con))
+    guide = GUIDE.format(limit=ROW_LIMIT)
+    if scope == "firecrawl":
+        guide += CRAWL_GUIDE
+    elif scope == "mixed":
+        guide += CRAWL_GUIDE + MIXED_NOTE
+    text = guide + "\n\nTABLES:\n" + "\n".join(_describe(con))
     _schemas[scope] = (time.time(), text)
     return text
 

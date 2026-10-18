@@ -307,9 +307,7 @@ td.l,th.l{text-align:left}
 .panel .blk{display:block}
 .cfg input,.cfg select{width:100%}
 .cfg td{padding:4px 6px 4px 0}
-#crawl-results td,#aq-result td{white-space:normal;min-width:110px;font-size:12.5px}
-#aq-sql{margin-top:6px}
-#aq-examples button{font-weight:500}
+#crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
 .credits{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;font-size:13.5px}
 .credits b{font-size:15px}
 .credits .bad{color:#b42318;font-weight:600}
@@ -326,6 +324,11 @@ td.l,th.l{text-align:left}
 .fbar{display:grid;grid-template-columns:200px 1fr 90px;gap:10px;align-items:center;font-size:12.5px;margin:3px 0}
 .fbar .t{height:8px;background:#eef1f5;border-radius:4px;overflow:hidden}
 .fbar .t div{height:100%;background:var(--good)}
+.seg{display:inline-flex;border:1px solid #dde2ea;border-radius:999px;padding:3px;margin:4px 0 6px;background:#fff}
+.seg button{margin:0;background:transparent;color:var(--muted);border-radius:999px;padding:8px 18px;font-size:13.5px}
+.seg button.on{background:var(--ink);color:#fff}
+#q-examples button{font-weight:500}
+#q-out td{white-space:normal;min-width:100px;font-size:12.5px}
 .ask{display:flex;gap:8px;margin:8px 0}
 .ask input{flex:1;font:14px 'Inter',sans-serif;padding:10px 13px;border:1px solid #dde2ea;border-radius:10px}
 .ask button{margin-top:0}
@@ -698,11 +701,11 @@ CRAWL_JS = """<script>
   function act(p, method, path, body, done) {
     msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); live(); }).catch(function (e) { msg(e.message); });
   }
-  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); loadExamples(); };
+  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); };
   if (token) { $('crawl-token').value = token; }
   // A remembered password: opening the panel loads it, no Unlock press needed.
   $('crawl-panel').addEventListener('toggle', function () {
-    if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); loadExamples(); }
+    if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); }
   });
   $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-follow').oninput = estimate;
   $('crawl-start').onclick = function () {
@@ -730,38 +733,6 @@ CRAWL_JS = """<script>
       follow_links: parseInt($('cfg-follow').value || '0', 10),
       filters: {categories: split($('cfg-cats').value), ntas: split($('cfg-ntas').value), min_confidence: parseFloat($('cfg-conf').value)}}, 'Saved.');
   };
-  // ── the private Query box ──
-  var aqLast = null;
-  function loadExamples() {
-    api('GET', '/api/crawl/examples').then(function (d) {
-      var box = $('aq-examples'); box.textContent = '';
-      (d.examples || []).forEach(function (x) {
-        var b = el('button', x[0], 'ghost'); b.type = 'button';
-        b.onclick = function () { $('aq-sql').value = x[1]; };
-        box.appendChild(b);
-      });
-    }).catch(function () {});
-  }
-  $('aq-run').onclick = function () {
-    var sql = $('aq-sql').value.trim(); if (!sql) return;
-    $('aq-msg').textContent = 'Running…'; $('aq-csv').hidden = true;
-    api('POST', '/api/crawl/query', {sql: sql}).then(function (d) {
-      aqLast = d; var box = $('aq-result'); box.textContent = '';
-      $('aq-msg').textContent = d.rows.length + ' row(s)' + (d.truncated ? ' · capped at 500' : '');
-      if (!d.rows.length) { box.appendChild(el('div', 'No rows.', 'empty')); return; }
-      var t = el('table'), hr = el('tr'); d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
-      var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
-      d.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
-      t.appendChild(tb); box.appendChild(t); $('aq-csv').hidden = false;
-    }).catch(function (e) { $('aq-msg').textContent = e.message; });
-  };
-  $('aq-csv').onclick = function (ev) {
-    ev.preventDefault(); if (!aqLast) return;
-    var q = function (v) { v = v == null ? '' : String(v); return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var csv = [aqLast.columns.map(q).join(',')].concat(aqLast.rows.map(function (r) { return r.map(q).join(','); })).join('\\n');
-    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
-    a.download = 'queens_query.csv'; a.click();
-  };
   $('crawl-csv').onclick = function (ev) {
     ev.preventDefault();
     fetch('/api/crawl/results.csv', {headers: {'X-Fetch-Token': token}}).then(function (r) {
@@ -773,64 +744,116 @@ CRAWL_JS = """<script>
 </script>"""
 
 
-ASK_JS = """<script>
-/* Plain English -> SQL. The answer shown is the query's RESULT; the SQL is
-   shown beside it. Everything returned is set as text, never HTML. */
+QUERY_JS = r"""<script>
+/* The one Query box: Free data / Firecrawl data / Mixed, for typed SQL and
+   for plain-English questions. Everything returned is set as text, never HTML. */
 (function () {
+  var $ = function (id) { return document.getElementById(id); };
+  if (!$('sql-box')) return;
   function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
-  function token() {
+  var NOTES = {
+    free: 'Public data, open to everyone: nta_profile (the 82 neighbourhoods side by side), overture_places, ' +
+          'dcwp_licences, dohmh_food, sla_liquor, nys_retail_food, nyc_311, subway_ridership, pluto, dob_permits, ' +
+          'dob_now, dof_sales, storefront_vacancy, acs_tracts and more.',
+    firecrawl: 'The crawled websites only (password): web_latest (one row per business, a column per field), ' +
+               'web_facts (every page read, with its full text in markdown), site_checks (is each website alive, dead, parked...).',
+    mixed: 'Both together (password): the crawled tables plus every public table under its own name, e.g. ' +
+           'join web_latest.nta2020 to nta_profile.code.'
+  };
+  var scope = 'free', examples = {}, last = null;
+  try { scope = localStorage.getItem('ql_scope') || 'free'; } catch (e) {}
+  function token(again) {
     var t = '';
     try { t = localStorage.getItem('ql_token') || ''; } catch (e) {}
-    if (!t) {
+    if (!t || again) {
       t = window.prompt('Password (the control panel password):') || '';
-      if (t) { try { localStorage.setItem('ql_token', t); } catch (e) {} }
+      try { if (t) localStorage.setItem('ql_token', t); } catch (e) {}
     }
     return t;
   }
-  function wire(scope, sqlBoxId) {
-    var input = document.getElementById('ask-q-' + scope), btn = document.getElementById('ask-b-' + scope);
-    var out = document.getElementById('ask-r-' + scope);
-    if (!input || !btn) return;
-    function go() {
-      var qtext = input.value.trim(); if (!qtext) return;
-      var t = token(); if (!t) return;
-      out.textContent = ''; var box = el('div', null, 'ask-out'); out.appendChild(box);
-      box.appendChild(el('span', 'Thinking… Claude is writing the query.', 'muted'));
-      btn.disabled = true;
-      fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Fetch-Token': t},
-                         body: JSON.stringify({question: qtext, scope: scope})})
-        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); })
-        .then(function (d) {
-          box.textContent = '';
-          box.appendChild(el('div', d.why || '', 'why'));
-          if (d.sql) {
-            box.appendChild(el('pre', d.sql));
-            var sb = document.getElementById(sqlBoxId); if (sb) sb.value = d.sql;
-          }
-          if (d.error) { box.appendChild(el('div', d.error, 'err')); }
-          if (d.rows && d.rows.length) {
-            var wrap = el('div', null, 'scroll'), tb = el('table'), hr = el('tr');
-            d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
-            var th = el('thead'); th.appendChild(hr); tb.appendChild(th); var body = el('tbody');
-            d.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); body.appendChild(tr); });
-            tb.appendChild(body); wrap.appendChild(tb); box.appendChild(wrap);
-          } else if (d.sql && !d.error) { box.appendChild(el('div', 'The query ran and returned no rows.', 'muted')); }
-          var tk = d.tokens || {};
-          box.appendChild(el('p', (d.rows ? d.rows.length : 0) + ' row(s)' + (d.truncated ? ' (first 200)' : '') + ' · ' +
-            d.model + ' · ' + (tk.input || 0) + ' in / ' + (tk.output || 0) + ' out tokens' +
-            (tk.cache_read ? ' (+' + tk.cache_read + ' cached)' : '') + (d.attempts > 1 ? ' · fixed on retry' : ''), 'note'));
-        })
-        .catch(function (e) {
-          box.textContent = ''; box.appendChild(el('div', e.message, 'err'));
-          if (/password/i.test(e.message)) { try { localStorage.removeItem('ql_token'); } catch (x) {} }
-        })
-        .then(function () { btn.disabled = false; });
-    }
-    btn.onclick = go;
-    input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') go(); });
+  function post(path, body, needPassword) {
+    var h = {'Content-Type': 'application/json'};
+    if (needPassword) { var t = token(); if (!t) return Promise.reject(new Error('A password is needed for this.')); h['X-Fetch-Token'] = t; }
+    return fetch(path, {method: 'POST', headers: h, body: JSON.stringify(body)}).then(function (r) {
+      return r.json().then(function (j) {
+        if (r.status === 403) { try { localStorage.removeItem('ql_token'); } catch (e) {} }
+        if (!r.ok) throw new Error(j.error || ('error ' + r.status));
+        return j;
+      });
+    });
   }
-  wire('public', 'sql-box');
-  wire('crawl', 'aq-sql');
+  function renderExamples() {
+    var box = $('q-examples'); box.textContent = '';
+    (examples[scope] || []).forEach(function (x) {
+      var b = el('button', x[0], 'ghost'); b.type = 'button';
+      b.onclick = function () { $('sql-box').value = x[1]; };
+      box.appendChild(b);
+    });
+  }
+  function status() {
+    var box = $('scope-status'); box.textContent = '';
+    if (scope === 'free') return;
+    fetch('/api/crawl/overview').then(function (r) { return r.json(); }).then(function (o) {
+      box.textContent = 'Firecrawl data right now: ' + (o.businesses_read || 0).toLocaleString() + ' businesses read (' +
+        (o.with_facts || 0).toLocaleString() + ' pages) · last collected ' +
+        (o.last_read ? o.last_read.slice(0, 16) + ' UTC' : 'never') + ' · ' +
+        (o.sites_checked || 0).toLocaleString() + ' websites checked. Each query reads the latest saved results.';
+    }).catch(function () {});
+  }
+  function setScope(s) {
+    scope = s;
+    try { localStorage.setItem('ql_scope', s); } catch (e) {}
+    ['free', 'firecrawl', 'mixed'].forEach(function (x) { $('scope-' + x).className = x === s ? 'on' : ''; });
+    $('scope-note').textContent = NOTES[s];
+    renderExamples(); status();
+  }
+  function show(d) {
+    last = d; var out = $('q-out'); out.textContent = '';
+    if (d.why || d.sql) {
+      var a = el('div', null, 'ask-out');
+      if (d.why) a.appendChild(el('div', d.why, 'why'));
+      if (d.sql) { a.appendChild(el('pre', d.sql)); $('sql-box').value = d.sql; }
+      if (d.error) a.appendChild(el('div', d.error, 'err'));
+      var tk = d.tokens;
+      if (tk) a.appendChild(el('p', d.model + ' · ' + (tk.input || 0) + ' in / ' + (tk.output || 0) + ' out tokens' +
+        (tk.cache_read ? ' (+' + tk.cache_read + ' cached)' : '') + (d.attempts > 1 ? ' · fixed on retry' : ''), 'note'));
+      out.appendChild(a);
+    }
+    var rows = d.rows || [];
+    $('q-msg').textContent = rows.length + ' row(s)' + (d.truncated ? ' · capped' : '');
+    $('q-csv').hidden = !rows.length;
+    if (!rows.length) { if (!d.error) out.appendChild(el('div', 'No rows.', 'empty')); return; }
+    var wrap = el('div', null, 'scroll'), t = el('table'), hr = el('tr');
+    d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
+    var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
+    rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
+    t.appendChild(tb); wrap.appendChild(t); out.appendChild(wrap);
+  }
+  function fail(e) { $('q-msg').textContent = ''; var out = $('q-out'); out.textContent = ''; out.appendChild(el('div', e.message, 'err')); }
+  $('q-run').onclick = function () {
+    var sql = $('sql-box').value.trim(); if (!sql) return;
+    $('q-msg').textContent = 'Running…'; $('q-out').textContent = '';
+    post('/api/query', {sql: sql, scope: scope}, scope !== 'free').then(show).catch(fail);
+  };
+  function ask() {
+    var qtext = $('ask-q').value.trim(); if (!qtext) return;
+    $('q-msg').textContent = 'Thinking… Claude is writing the query.'; $('q-out').textContent = '';
+    $('ask-b').disabled = true;
+    post('/api/ask', {question: qtext, scope: scope}, true).then(show).catch(fail)
+      .then(function () { $('ask-b').disabled = false; });
+  }
+  $('ask-b').onclick = ask;
+  $('ask-q').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') ask(); });
+  $('q-csv').onclick = function (ev) {
+    ev.preventDefault(); if (!last) return;
+    var q = function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var csv = [last.columns.map(q).join(',')].concat(last.rows.map(function (r) { return r.map(q).join(','); })).join('\n');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
+    a.download = 'queens_query.csv'; a.click();
+  };
+  ['free', 'firecrawl', 'mixed'].forEach(function (x) { $('scope-' + x).onclick = function () { setScope(x); }; });
+  fetch('/api/query/examples').then(function (r) { return r.json(); }).then(function (d) { examples = d; renderExamples(); }).catch(function () {});
+  setScope(scope);
 })();
 </script>"""
 
@@ -1026,21 +1049,8 @@ def render(sql: str = "", result: str = "") -> str:
         <div class="stats" id="stat-totals"></div>
         <p class="note" id="stat-last"></p>
         <div id="stat-fields"></div>
-        <h3>Query the website data</h3>
-        <p class="note">Tables: <code>web_latest</code> (one row per business, a column per field),
-          <code>web_facts</code> (every page read, with its full text in <code>markdown</code>),
-          <code>site_checks</code> (the free website check), and every public table as
-          <code>q.&lt;table&gt;</code> (e.g. <code>q.nta_profile</code>, <code>q.overture_places</code>).
-          Read-only; results cap at 500 rows.</p>
-        <div class="ask"><input id="ask-q-crawl" placeholder="Ask in plain English — e.g. Which restaurants in Flushing are open late, and what do they charge?">
-          <button type="button" id="ask-b-crawl">Ask</button></div>
-        <div id="ask-r-crawl"></div>
-        <div class="pnl-row" id="aq-examples"></div>
-        <textarea id="aq-sql" rows="5" placeholder="SELECT name, opening_hours FROM web_latest LIMIT 20"></textarea>
-        <div class="pnl-row"><button type="button" id="aq-run">Run query</button>
-          <a href="#" id="aq-csv" hidden>download this result as CSV</a>
-          <span class="muted" id="aq-msg"></span></div>
-        <div class="scroll" id="aq-result"></div>
+        <p class="note">To search this data, use the <a href="#query">Query</a> section with
+          <b>Firecrawl data</b> or <b>Mixed</b> selected.</p>
         <h3>Latest results <a href="#" id="crawl-csv">download CSV</a></h3>
         <div class="scroll" id="crawl-results"></div>
       </div>
@@ -1058,17 +1068,24 @@ def render(sql: str = "", result: str = "") -> str:
 
   <section id="query">
     <h2>Query</h2>
-    <p class="note">Read-only SQL over the loaded tables. Results cap at 200 rows.</p>
-    <div class="ask"><input id="ask-q-public" placeholder="Ask in plain English — e.g. Which 5 neighbourhoods have the most restaurants per resident?">
-      <button type="button" id="ask-b-public">Ask</button></div>
-    <p class="note">Claude writes the SQL, it runs on the real tables, and you see both. Needs the
-      control panel password (it uses Anthropic credits).</p>
-    <div id="ask-r-public"></div>
-    <form method="get" action="/query">
-      <textarea id="sql-box" name="sql" rows="3"
-        placeholder="SELECT business_category, count(*) AS n FROM dcwp_licences GROUP BY 1 ORDER BY n DESC LIMIT 10">{html.escape(sql)}</textarea>
-      <button type="submit">Run query</button>
-    </form>
+    <div class="seg" role="tablist">
+      <button type="button" id="scope-free" class="on">Free data</button>
+      <button type="button" id="scope-firecrawl">Firecrawl data</button>
+      <button type="button" id="scope-mixed">Mixed</button>
+    </div>
+    <p class="note" id="scope-note"></p>
+    <p class="note" id="scope-status"></p>
+    <div class="ask"><input id="ask-q" placeholder="Ask in plain English — e.g. Which 5 neighbourhoods have the most restaurants per resident?">
+      <button type="button" id="ask-b">Ask</button></div>
+    <p class="note">Ask: Claude writes the SQL, it runs on the selected data, and you see both
+      (needs the control panel password — it uses Anthropic credits). Or write SQL yourself below.</p>
+    <div class="pnl-row" id="q-examples"></div>
+    <textarea id="sql-box" rows="4"
+      placeholder="SELECT name, restaurants_per_10k FROM nta_profile ORDER BY 2 DESC LIMIT 10">{html.escape(sql)}</textarea>
+    <div class="pnl-row"><button type="button" id="q-run">Run query</button>
+      <a href="#" id="q-csv" hidden>download this result as CSV</a>
+      <span class="muted" id="q-msg"></span></div>
+    <div id="q-out"></div>
     {result}
   </section>
 
@@ -1078,7 +1095,7 @@ def render(sql: str = "", result: str = "") -> str:
 </div>
 {NB_JS}
 {CRAWL_JS}
-{ASK_JS}
+{QUERY_JS}
 <script>
 /* Keep the collection table current every 10 s, but ONLY while something is
    queued or running, and only while the tab is visible. Polling forever kept
@@ -1254,29 +1271,47 @@ def crawl_progress(request: Request):
     return _crawl_call(lambda: _ck().progress())
 
 
-@app.post("/api/crawl/query")
-async def crawl_query(request: Request):
-    """The control panel's private Query box: website data + public tables.
-    Same rules as the public box — one SELECT, no files, no web, capped."""
-    denied = _admin_error(request)
-    if denied:
-        return denied
+SCOPES = ("free", "firecrawl", "mixed")
+
+
+@app.post("/api/query")
+async def api_query(request: Request):
+    """The one Query box. Free data is open to everyone; Firecrawl data and
+    Mixed need the password. Same rules everywhere: one SELECT, no files, caps."""
     body = await request.json()
+    scope = body.get("scope") if body.get("scope") in SCOPES else "free"
+    if scope != "free":
+        denied = _admin_error(request)
+        if denied:
+            return denied
     sql = str(body.get("sql") or "").strip().rstrip(";")
     why = _one_read(sql) if sql else "Write a query first."
     if why:
         return JSONResponse({"error": why}, status_code=400)
+    if scope == "free":
+        cols, rows = q(sql, limit=501)
+        if busy():
+            return JSONResponse({"error": "The database is busy saving a table — try again in a minute."},
+                                status_code=409)
+        if cols == ["error"]:
+            return JSONResponse({"error": str(rows[0][0])}, status_code=400)
+    else:
+        try:
+            cols, rows = _run_analysis(sql, 501, scope)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"error": jobs.clean(str(e))}, status_code=400)
+    return {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows[:500]],
+            "truncated": len(rows) > 500, "scope": scope}
 
-    def run():
-        cols, rows = _run_analysis(sql, 501)
-        return {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows[:500]],
-                "truncated": len(rows) > 500}
-    return _crawl_call(run)
+
+@app.get("/api/query/examples")
+def api_query_examples():
+    return _ck().EXAMPLES
 
 
-def _run_analysis(sql: str, limit: int):
-    """One query on the private analysis database, interrupted after QUERY_SECONDS."""
-    con = _ck().analysis_db()
+def _run_analysis(sql: str, limit: int, scope: str = "mixed"):
+    """One query on the website-data database, interrupted after QUERY_SECONDS."""
+    con = _ck().analysis_db(scope)
     timer = threading.Timer(QUERY_SECONDS, con.interrupt)
     timer.start()
     try:
@@ -1301,11 +1336,11 @@ async def ask_question(request: Request):
         return denied
     import ask as A
     body = await request.json()
-    scope = "crawl" if body.get("scope") == "crawl" else "public"
+    scope = body.get("scope") if body.get("scope") in SCOPES else "free"
     question = body.get("question") or ""
 
     def go():
-        if scope == "public":
+        if scope == "free":
             c = con()
             if not c:
                 raise ValueError("the database is busy or not loaded — try again in a minute")
@@ -1320,25 +1355,15 @@ async def ask_question(request: Request):
             finally:
                 c.close()
         else:
-            dc = _ck().analysis_db()
+            dc = _ck().analysis_db(scope)
             try:
                 out = A.answer(question, scope, dc, _one_read,
-                               lambda sql: _run_analysis(sql, A.ROW_LIMIT + 1))
+                               lambda sql: _run_analysis(sql, A.ROW_LIMIT + 1, scope))
             finally:
                 dc.close()
         out["rows"] = [[None if v is None else str(v) for v in r] for r in out["rows"]]
         return out
     return _crawl_call(go)
-
-
-@app.get("/api/crawl/examples")
-def crawl_examples(request: Request):
-    denied = _admin_error(request)
-    if denied:
-        return denied
-    ck = _ck()
-    return {"examples": ck.ANALYSIS_EXAMPLES,
-            "fields": [f["name"] for f in ck.config()["fields"] if f["name"] != ck.LINKS_FIELD]}
 
 
 @app.post("/api/crawl/config")

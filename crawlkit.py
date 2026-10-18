@@ -878,17 +878,21 @@ _SQL_TYPES = {"text": "VARCHAR", "number": "DOUBLE", "yes/no": "BOOLEAN", "list"
               "prices": "JSON"}
 
 
-def analysis_db():
-    """An in-memory DuckDB for the control panel's private Query box:
+CRAWL_TABLES = ("web_latest", "web_facts", "site_checks")
+
+
+def analysis_db(scope: str = "mixed"):
+    """An in-memory DuckDB for the Query box's 'Firecrawl data' and 'Mixed':
 
         web_latest   one row per business (latest read, linked pages merged),
                      one column per requirement field, typed
         web_facts    every page read (facts JSON, page text, evidence, status)
         site_checks  the free website check, one row per business
-        q.<table>    every public table (q.nta_profile, q.overture_places, ...)
+        <public>     Mixed only: every public table under its own name (and q.<name>)
 
-    Built fresh per query from the stored files, then locked down like the
-    public box (no files, no web), so a query can only read these tables."""
+    Built FRESH per query from the stored files (refreshed from the bucket
+    within 5 minutes), so a query always sees the latest collected results.
+    Then locked down like the public box: no files, no web."""
     import duckdb
     c = config()
     fields = [f for f in c["fields"] if f["name"] != LINKS_FIELD]
@@ -932,10 +936,16 @@ def analysis_db():
                      *vals, json.dumps(last["evidence"]), changed or None, len(vs), last["at"]])
     if rows:
         con.executemany(f"INSERT INTO web_latest VALUES ({', '.join('?' * len(cols))})", rows)
-    if DB.exists():
+    if scope == "mixed" and DB.exists():
         con.execute(f"ATTACH {_q(DB)} AS q (READ_ONLY)")
-    if gcs.enabled():
-        gcs.attach(con)                   # the public big tables are views over the bucket
+        if gcs.enabled():
+            gcs.attach(con)               # the public big tables are views over the bucket
+        public = con.execute("""SELECT table_name FROM duckdb_tables() WHERE database_name = 'q'
+                                UNION SELECT view_name FROM duckdb_views()
+                                WHERE database_name = 'q' AND NOT internal""").fetchall()
+        for (t,) in public:
+            if not t.startswith("_") and t not in CRAWL_TABLES:
+                con.execute(f'CREATE VIEW "{t}" AS SELECT * FROM q."{t}"')
     for stmt in ("SET memory_limit='300MB'", "SET threads=2",
                  "SET disabled_filesystems='LocalFileSystem,HTTPFileSystem'",
                  "SET lock_configuration=true"):
@@ -943,41 +953,62 @@ def analysis_db():
     return con
 
 
-ANALYSIS_EXAMPLES = [
-    ("Businesses and their facts",
-     "SELECT name, nta2020, business_type, opening_hours, price_level, services_or_products\n"
-     "FROM web_latest ORDER BY fetched_at DESC LIMIT 50"),
-    ("Open late, by neighbourhood",
-     "SELECT n.name AS neighbourhood, count(*) AS open_late\nFROM web_latest w "
-     "JOIN q.nta_profile n ON n.code = w.nta2020\nWHERE w.open_late GROUP BY 1 ORDER BY 2 DESC"),
-    ("Every price found",
-     "SELECT w.name, p.item, p.price, p.currency, p.unit\nFROM web_latest w, "
-     "unnest(from_json(w.prices, '[{\"item\":\"VARCHAR\",\"price\":\"DOUBLE\",\"currency\":\"VARCHAR\",\"unit\":\"VARCHAR\"}]')) t(p)\n"
-     "ORDER BY p.price DESC"),
-    ("Dead websites by neighbourhood",
-     "SELECT ntaname, count(*) AS sites,\n  count(*) FILTER (WHERE status IN ('dead','parked','hijacked')) AS gone,\n"
-     "  round(100.0 * gone / sites, 1) AS pct_gone\nFROM site_checks GROUP BY 1 HAVING sites >= 30 ORDER BY pct_gone DESC"),
-    ("Hiring or opening soon",
-     "SELECT name, nta2020, now_hiring, opening_soon_notice FROM web_latest\n"
-     "WHERE now_hiring OR opening_soon_notice IS NOT NULL"),
-    ("What changed since the last read",
-     "SELECT name, changed_since_last_read, reads FROM web_latest\nWHERE changed_since_last_read IS NOT NULL"),
-    ("Search the page text",
-     "SELECT name, url FROM web_facts\nWHERE markdown ILIKE '%halal%' LIMIT 50"),
-]
+EXAMPLES = {
+    "free": [
+        ("Restaurants per resident", "SELECT name, residents, restaurants, restaurants_per_10k\nFROM nta_profile "
+         "WHERE kind = 'residential' ORDER BY restaurants_per_10k DESC LIMIT 15"),
+        ("311 complaints by type", "SELECT complaint_type, count(*) AS complaints\nFROM nyc_311 GROUP BY 1 ORDER BY 2 DESC LIMIT 15"),
+        ("Busiest subway stations", "SELECT station_complex, round(sum(TRY_CAST(riders AS DOUBLE)) / "
+         "count(DISTINCT TRY_CAST(transit_timestamp AS TIMESTAMP)::DATE)) AS riders_per_day\nFROM subway_ridership "
+         "GROUP BY 1 ORDER BY 2 DESC LIMIT 15"),
+        ("Storefront vacancy by neighbourhood", "SELECT name, storefronts, vacant, vacancy_pct\nFROM nta_profile "
+         "WHERE storefronts >= 30 ORDER BY vacancy_pct DESC LIMIT 15"),
+    ],
+    "firecrawl": [
+        ("Businesses and their facts",
+         "SELECT name, nta2020, business_type, opening_hours, price_level, services_or_products\n"
+         "FROM web_latest ORDER BY fetched_at DESC LIMIT 50"),
+        ("Every price found",
+         "SELECT w.name, p.item, p.price, p.currency, p.unit\nFROM web_latest w, "
+         "unnest(from_json(w.prices, '[{\"item\":\"VARCHAR\",\"price\":\"DOUBLE\",\"currency\":\"VARCHAR\",\"unit\":\"VARCHAR\"}]')) t(p)\n"
+         "ORDER BY p.price DESC"),
+        ("Dead websites by neighbourhood",
+         "SELECT ntaname, count(*) AS sites,\n  count(*) FILTER (WHERE status IN ('dead','parked','hijacked')) AS gone,\n"
+         "  round(100.0 * gone / sites, 1) AS pct_gone\nFROM site_checks GROUP BY 1 HAVING sites >= 30 ORDER BY pct_gone DESC"),
+        ("Hiring or opening soon",
+         "SELECT name, nta2020, now_hiring, opening_soon_notice FROM web_latest\n"
+         "WHERE now_hiring OR opening_soon_notice IS NOT NULL"),
+        ("What changed since the last read",
+         "SELECT name, changed_since_last_read, reads FROM web_latest\nWHERE changed_since_last_read IS NOT NULL"),
+        ("Search the page text",
+         "SELECT name, url FROM web_facts\nWHERE markdown ILIKE '%halal%' LIMIT 50"),
+    ],
+    "mixed": [
+        ("Open late, by neighbourhood",
+         "SELECT n.name AS neighbourhood, count(*) AS open_late\nFROM web_latest w "
+         "JOIN nta_profile n ON n.code = w.nta2020\nWHERE w.open_late GROUP BY 1 ORDER BY 2 DESC"),
+        ("Dead websites vs storefront vacancy",
+         "SELECT n.name, n.vacancy_pct,\n  round(100.0 * count(*) FILTER (WHERE s.status = 'dead') / count(*), 1) AS dead_site_pct\n"
+         "FROM site_checks s JOIN nta_profile n ON n.code = s.nta2020\nGROUP BY 1, 2 HAVING count(*) >= 30 ORDER BY 3 DESC"),
+        ("Crawled businesses with their neighbourhood",
+         "SELECT w.name, w.business_type, n.name AS neighbourhood, n.median_income, n.subway_weekday_riders\n"
+         "FROM web_latest w JOIN nta_profile n ON n.code = w.nta2020 LIMIT 50"),
+    ],
+}
 
 
 def overview() -> dict:
     """Public-safe summary: no URLs, no extracted text."""
     checks = dict(query("SELECT status, count(*) FROM site_checks GROUP BY 1"))
-    facts = query("SELECT count(*), count(facts), max(fetched_at) FROM web_facts")[0]
+    facts = query("SELECT count(*), count(facts), max(fetched_at), "
+                  "count(DISTINCT place_id) FILTER (WHERE facts IS NOT NULL) FROM web_facts")[0]
     last_check = query("SELECT max(checked_at) FROM site_checks")[0][0]
     active = [{k: r.get(k) for k in ("run_id", "status", "n", "completed", "credits_used",
                                       "expires_at", "started", "mode")}
               for r in runs() if not r.get("collected_at")]
     return {"site_checks": checks, "sites_checked": sum(checks.values()),
             "last_check": str(last_check) if last_check else None,
-            "pages_read": facts[0], "with_facts": facts[1],
+            "pages_read": facts[0], "with_facts": facts[1], "businesses_read": facts[3],
             "last_read": str(facts[2]) if facts[2] else None, "active_run": active[-1] if active else None}
 
 
