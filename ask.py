@@ -75,14 +75,15 @@ Reply with exactly: <sql>...</sql><why>one plain-English sentence on what the qu
 
 CRAWL_GUIDE = """
 The crawled website tables (research only):
-- web_latest: one row per business read by Firecrawl (latest read, linked pages merged).
+- web_latest: one row per business read (latest read, linked pages merged).
   Column types: VARCHAR[] lists → use list_contains(col, 'x'), array_to_string(col, ', '), or unnest(col).
   BOOLEAN yes/no fields are TRUE only when the page said so. `prices` is JSON: an array of
   {item, price, currency, unit} → unnest(from_json(prices,
   '[{"item":"VARCHAR","price":"DOUBLE","currency":"VARCHAR","unit":"VARCHAR"}]')) t(p), then p.item, p.price.
   nta2020 joins q.nta_profile.code. `evidence` is JSON quotes per field.
 - web_facts: every page read: url, title, http_status, facts (JSON text), markdown (the page text — search
-  it with ILIKE), fetched_at, run_id, page_kind ('home' or 'follow').
+  it with ILIKE), fetched_at, run_id, page_kind ('home' or 'follow'), extractor (who filled facts: a
+  Claude model name or 'firecrawl'; empty on reads before 2026-10-18, which were Firecrawl).
 - site_checks: the free website check, one row per business: status is one of alive, alive_js, blocked,
   dead (domain gone), parked, hijacked (spam), platform (not their own site), error, unreachable;
   nta2020, ntaname, category, website, domain, reason, checked_at.

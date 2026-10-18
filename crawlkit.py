@@ -15,8 +15,10 @@ control panel (app.py):
    by the page (or `crawl.py collect`).
 
 What to pull is set in the REQUIREMENTS (config): a list of fields — name,
-type, description — plus a prompt. Structured mode costs 5 credits a page
-(Firecrawl's AI fills the fields); text mode 1 credit (the page as text).
+type, description — plus a prompt. Structured mode: Firecrawl reads the page
+as text (1 credit) and Claude Haiku fills the fields (extract.py, about a
+tenth of a cent a page); Firecrawl's own AI extraction (5 credits a page)
+stays as an option, config "extractor". Text mode: the page text only.
 
 ⚠️ RESEARCH ONLY. Everything lands in scraped/ (local, gitignored) and the
 bucket's scraped/ prefix, never in raw/ with the public records, never in
@@ -51,6 +53,9 @@ API = "https://api.firecrawl.dev/v2"
 PREFIX = os.environ.get("GCS_SCRAPED_PREFIX") or "scraped"
 UA = "Mozilla/5.0 (compatible; QueensLab-research/1.0; site health check)"
 CREDITS = {"structured": 5, "text": 1}       # per page, from Firecrawl's billing docs
+CLAUDE_CREDITS = 1                            # structured with Claude: Firecrawl only reads the text
+EXTRACTORS = ("claude", "firecrawl")
+EXTRACT_WORKERS, EXTRACT_CHUNK = 6, 50        # pages Claude reads at once; pages saved per write
 REMOTE_STEP = jobs.REMOTE_STEP                # a job running on Firecrawl's side
 _lock = threading.Lock()
 try:                                   # Mozilla's CA list: this machine's Python lacked one,
@@ -79,6 +84,7 @@ SPAM = re.compile(r"\b(slot ?gacor|slot88|togel|judi|casino online|situs|bandar|
 
 DEFAULT_CONFIG = {
     "mode": "structured",
+    "extractor": "claude",       # since 2026-10-18; "firecrawl" = Firecrawl's AI, 5 credits a page
     "prompt": ("Extract facts about this local business in Queens, New York, using only what "
                "the page itself states. Leave a field empty rather than guessing."),
     "fields": [
@@ -214,6 +220,9 @@ def validate_config(c: dict) -> dict:
     mode = c.get("mode", out["mode"])
     if mode not in CREDITS:
         raise ValueError("mode must be 'structured' or 'text'")
+    extractor = c.get("extractor", out["extractor"])
+    if extractor not in EXTRACTORS:
+        raise ValueError("extractor must be 'claude' or 'firecrawl'")
     fields = c.get("fields", out["fields"])
     if not isinstance(fields, list) or not 1 <= len(fields) <= 40:
         raise ValueError("between 1 and 40 fields")
@@ -229,7 +238,7 @@ def validate_config(c: dict) -> dict:
         raise ValueError("field names must be unique")
     filt = c.get("filters", out["filters"]) or {}
     out.update({
-        "mode": mode, "fields": clean,
+        "mode": mode, "extractor": extractor, "fields": clean,
         "prompt": str(c.get("prompt", out["prompt"]))[:1000],
         "filters": {"categories": [str(x) for x in filt.get("categories", [])][:50],
                     "ntas": [str(x) for x in filt.get("ntas", [])][:100],
@@ -256,9 +265,16 @@ def schema(c: dict) -> dict:
     return {"type": "object", "properties": props}
 
 
+def page_credits(c: dict) -> int:
+    """Firecrawl credits per page read."""
+    if c["mode"] == "text":
+        return CREDITS["text"]
+    return CREDITS["structured"] if c.get("extractor") == "firecrawl" else CLAUDE_CREDITS
+
+
 def per_site(c: dict) -> int:
     """Credits per business, counting the follow-up pages it MAY use."""
-    return CREDITS[c["mode"]] * (1 + (c.get("follow_links", 0) if c["mode"] == "structured" else 0))
+    return page_credits(c) * (1 + (c.get("follow_links", 0) if c["mode"] == "structured" else 0))
 
 
 # ── tables in scraped/: kept locally, mirrored to the bucket ──────────────
@@ -272,7 +288,9 @@ FACT_COLS = [("run_id", "VARCHAR"), ("place_id", "VARCHAR"), ("name", "VARCHAR")
              ("final_url", "VARCHAR"), ("http_status", "INTEGER"), ("title", "VARCHAR"),
              ("mode", "VARCHAR"), ("facts", "VARCHAR"), ("markdown", "VARCHAR"),
              ("error", "VARCHAR"), ("fetched_at", "TIMESTAMP"),
-             ("base_run", "VARCHAR"), ("page_kind", "VARCHAR")]
+             ("base_run", "VARCHAR"), ("page_kind", "VARCHAR"),
+             ("extractor", "VARCHAR")]          # who filled facts: a Claude model or 'firecrawl'
+_I = {n: i for i, (n, _) in enumerate(FACT_COLS)}
 
 
 REFRESH_S = 300   # the other machine may have written newer results to the bucket
@@ -512,7 +530,8 @@ def usage(cr: dict | None = None) -> dict:
     period = sum(r.get("credits_used") or 0 for r in rs if (r.get("started") or "") >= start[:19])
     active = [r for r in rs if not r.get("collected_at")]
     return {"all_time": total, "this_period": period,
-            "this_run": (active[-1].get("credits_used") or 0) if active else None}
+            "this_run": (active[-1].get("credits_used") or 0) if active else None,
+            "ai_usd": round(sum((r.get("ai") or {}).get("usd") or 0 for r in rs), 4)}
 
 
 def candidates(limit: int, c: dict) -> list[tuple]:
@@ -537,9 +556,12 @@ def candidates(limit: int, c: dict) -> list[tuple]:
 def _submit(urls: list[str], c: dict) -> dict:
     # Structured mode keeps the page text too: markdown is the base read Firecrawl
     # bills anyway, so it costs nothing extra and lets pages be re-analysed later
-    # without paying to read them again.
-    formats = (["markdown"] if c["mode"] == "text" else
-               [{"type": "json", "schema": schema(c), "prompt": c["prompt"]}, "markdown"])
+    # without paying to read them again. With Claude as the extractor (the
+    # default) Firecrawl only reads the text, and Claude fills the fields when
+    # the run is collected.
+    by_firecrawl = c["mode"] == "structured" and c.get("extractor") == "firecrawl"
+    formats = ([{"type": "json", "schema": schema(c), "prompt": c["prompt"]}, "markdown"]
+               if by_firecrawl else ["markdown"])
     r = _api("POST", "/batch/scrape", {"urls": urls, "formats": formats, "onlyMainContent": True,
                                        "ignoreInvalidURLs": True, "timeout": 30000})
     if not r.get("id"):
@@ -576,16 +598,17 @@ def _follow(run: dict) -> dict | None:
             picks.append([pid, name, cat, nta, u])
     if not picks:
         return None
-    need = len(picks) * CREDITS["structured"]
+    fc = {**c, "extractor": run.get("extractor") or "firecrawl"}   # as its homepage run
+    need = len(picks) * page_credits(fc)
     have = credits().get("remaining")
     if have is not None and need > have:
         jobs.Job(run["job_id"]).warn(f"linked pages skipped: {need:,} credits needed, {have:,} left")
         return None
-    r = _submit([p[4] for p in picks], c)
+    r = _submit([p[4] for p in picks], fc)
     job = jobs.Job(jobs.queue("web_facts", jobs.new_run(), "follow-up")).start(step=REMOTE_STEP)
     job.warn(f"{len(picks)} linked pages of run {run['run_id']} · up to {need:,} credits")
     return {"run_id": uuid.uuid4().hex[:8], "batch_id": r["id"], "job_id": job.id, "mode": "structured",
-            "n": len(picks), "credits_est": need,
+            "extractor": fc["extractor"], "n": len(picks), "credits_est": need,
             "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "status": "scraping", "completed": 0, "credits_used": 0, "expires_at": None,
             "collected_at": None, "invalid": r.get("invalidURLs") or [],
@@ -606,7 +629,10 @@ def _save_runs(rs: list[dict]) -> None:
 
 
 def start(limit: int | None = None, origin: str = "cli") -> dict:
-    with _lock:
+    if not _lock.acquire(blocking=False):
+        raise FirecrawlError("still collecting the last run (Claude is reading its pages) — "
+                             "try again in a few minutes")
+    try:
         c = config()
         active = [r for r in runs() if not r.get("collected_at")]
         if active:
@@ -614,17 +640,24 @@ def start(limit: int | None = None, origin: str = "cli") -> dict:
         picks = candidates(limit or c["default_batch"], c)
         if not picks:
             raise FirecrawlError("no alive, own-site businesses left to read (run the site check first?)")
+        ex = c["extractor"] if c["mode"] == "structured" else None
+        if ex == "claude":
+            import ask
+            if not ask.has_key():
+                raise FirecrawlError("Claude reads the facts, but no Anthropic key is set (ANTHROPIC_API_KEY) — "
+                                     "set it, or choose Firecrawl AI under Requirements")
         need = len(picks) * per_site(c)
         have = credits().get("remaining")
         if have is not None and need > have:
             raise FirecrawlError(f"this run needs {need:,} credits; {have:,} remain")
         r = _submit([p[4] for p in picks], c)
         job = jobs.Job(jobs.queue("web_facts", jobs.new_run(), origin)).start(step=REMOTE_STEP)
-        job.warn(f"{len(picks)} sites · {c['mode']} · up to {need:,} credits"
+        job.warn(f"{len(picks)} sites · " + {"claude": "facts by Claude", "firecrawl": "facts by Firecrawl",
+                                             None: "page text only"}[ex] + f" · up to {need:,} credits"
                  + (f" (incl. up to {c['follow_links']} linked page per site)" if c["follow_links"]
                     and c["mode"] == "structured" else ""))
         run = {"run_id": uuid.uuid4().hex[:8], "batch_id": r["id"], "job_id": job.id,
-               "mode": c["mode"], "n": len(picks), "credits_est": need,
+               "mode": c["mode"], "extractor": ex, "n": len(picks), "credits_est": need,
                "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "status": "scraping", "completed": 0, "credits_used": 0, "expires_at": None,
                "collected_at": None, "invalid": r.get("invalidURLs") or [],
@@ -632,58 +665,98 @@ def start(limit: int | None = None, origin: str = "cli") -> dict:
                "urls": [list(p) for p in picks]}
         rs = runs(); rs.append(run); _save_runs(rs)
         return {k: v for k, v in run.items() if k != "urls"}
+    finally:
+        _lock.release()
 
 
 def refresh(collect_done: bool = True) -> list[dict]:
-    """Update every uncollected run from Firecrawl; collect the finished ones."""
+    """Update every uncollected run from Firecrawl; collect the finished ones.
+    Never waits: while another thread collects (Claude reading a run's pages
+    takes minutes) it returns the runs as they stand, so the panel's live
+    status keeps answering."""
+    if not _lock.acquire(blocking=False):
+        return [{k: v for k, v in r.items() if k != "urls"} for r in runs() if not r.get("collected_at")]
+    try:
+        return _refresh(collect_done)
+    finally:
+        _lock.release()
+
+
+def collect_soon() -> bool:
+    """Collect finished runs on a background thread, so a web request never
+    waits minutes for Claude. False when a collection is already going."""
+    if _lock.locked():
+        return False
+    threading.Thread(target=_collect_quietly, daemon=True, name="crawl-collect").start()
+    return True
+
+
+def _collect_quietly() -> None:
+    try:
+        refresh()
+    except Exception as e:  # noqa: BLE001 — a thread has nobody to raise to
+        print(f"[crawl] collect: {type(e).__name__}: {jobs.clean(str(e))}", flush=True)
+
+
+def _refresh(collect_done: bool) -> list[dict]:
     out = []
-    with _lock:
-        rs = runs()
-        changed = False
-        for run in rs:
-            if run.get("collected_at"):
-                continue
-            s = _api("GET", f"/batch/scrape/{run['batch_id']}")
-            run.update(status=s.get("status"), completed=s.get("completed", 0),
-                       credits_used=s.get("creditsUsed", 0), expires_at=s.get("expiresAt"))
+    rs = runs()
+    changed = False
+    for run in rs:
+        if run.get("collected_at"):
+            continue
+        s = _api("GET", f"/batch/scrape/{run['batch_id']}")
+        run.update(status=s.get("status"), completed=s.get("completed", 0),
+                   credits_used=s.get("creditsUsed", 0), expires_at=s.get("expiresAt"))
+        changed = True
+        job = jobs.Job(run["job_id"])
+        jobs._update(run["job_id"], rows_downloaded=run["completed"] or 0,
+                     last_activity=jobs.now(), progress_at=jobs.now())
+        if collect_done and run["status"] in ("completed", "failed", "cancelled"):
+            n = _collect(run, s, save=lambda: _save_runs(rs))
+            run["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            run.pop("extracting", None)
+            job.upload("uploaded" if gcs.enabled() else "off",
+                       gcs.url("web_facts.parquet", PREFIX) if gcs.enabled() else "no bucket")
+            if n < run["n"]:
+                job.warn(f"{run['n'] - n} of {run['n']} sites came back empty from Firecrawl "
+                         "(not charged)")
+            ai = run.get("ai")
+            if ai and ai.get("pages"):
+                job.warn(f"Claude read {ai['pages'] - ai['failed']} of {ai['pages']} pages · ${ai['usd']:.3f}"
+                         + (f" · {ai['failed']} not read (text kept; retry: python crawl.py extract)"
+                            if ai["failed"] else ""))
+            if run["status"] == "completed":
+                job.succeed(n)
+            else:
+                job.fail(f"Firecrawl reported '{run['status']}' after {run['completed']} of {run['n']}"
+                         f" — {n} results kept")
+        out.append({k: v for k, v in run.items() if k != "urls"})
+    followups = []
+    for run in rs:
+        if run.get("collected_at") and run.get("kind") == "home" and not run.get("followed"):
+            run["followed"] = True
             changed = True
-            job = jobs.Job(run["job_id"])
-            jobs._update(run["job_id"], rows_downloaded=run["completed"] or 0,
-                         last_activity=jobs.now(), progress_at=jobs.now())
-            if collect_done and run["status"] in ("completed", "failed", "cancelled"):
-                n = _collect(run, s)
-                run["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                job.upload("uploaded" if gcs.enabled() else "off",
-                           gcs.url("web_facts.parquet", PREFIX) if gcs.enabled() else "no bucket")
-                if n < run["n"]:
-                    job.warn(f"{run['n'] - n} of {run['n']} sites came back empty from Firecrawl "
-                             "(not charged)")
-                if run["status"] == "completed":
-                    job.succeed(n)
-                else:
-                    job.fail(f"Firecrawl reported '{run['status']}' after {run['completed']} of {run['n']}"
-                             f" — {n} results kept")
-            out.append({k: v for k, v in run.items() if k != "urls"})
-        followups = []
-        for run in rs:
-            if run.get("collected_at") and run.get("kind") == "home" and not run.get("followed"):
-                run["followed"] = True
-                changed = True
-                try:
-                    f = _follow(run)
-                except FirecrawlError as e:
-                    jobs.Job(run["job_id"]).warn(f"linked pages not read: {e}")
-                    f = None
-                if f:
-                    followups.append(f)
-        rs.extend(followups)
-        if changed:
-            _save_runs(rs)
+            try:
+                f = _follow(run)
+            except FirecrawlError as e:
+                jobs.Job(run["job_id"]).warn(f"linked pages not read: {e}")
+                f = None
+            if f:
+                followups.append(f)
+    rs.extend(followups)
+    if changed:
+        _save_runs(rs)
     return out
 
 
-def _collect(run: dict, first: dict) -> int:
-    """Every result page of a batch -> web_facts (and its URL -> business)."""
+def _collect(run: dict, first: dict, save=None) -> int:
+    """Every result page of a batch -> web_facts (and its URL -> business).
+
+    With Claude as the extractor the page text is saved first, then Claude
+    fills the facts and they are saved chunk by chunk: a server that sleeps
+    mid-way loses at most one chunk, and collecting again reuses every page
+    already read instead of paying for it twice."""
     by_url = {u[4]: u for u in run.get("urls", [])}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rows, page = [], first
@@ -698,15 +771,94 @@ def _collect(run: dict, first: dict) -> int:
                          (meta.get("title") or "")[:300], run["mode"],
                          json.dumps(facts) if facts is not None else None,
                          md[:60_000] if md else None, meta.get("error"), now,
-                         run.get("parent") or run["run_id"], run.get("kind") or "home"])
+                         run.get("parent") or run["run_id"], run.get("kind") or "home",
+                         "firecrawl" if facts is not None else None])
         nxt = page.get("next")
         if not nxt:
             break
         page = _api("GET", nxt)
-    if rows:
+    if not rows:
+        return 0
+    if run.get("extractor") == "claude":
+        import extract
+        done = dict(query("SELECT url, facts FROM web_facts WHERE run_id = ? AND facts IS NOT NULL",
+                          [run["run_id"]]))
+        for r in rows:
+            if r[_I["url"]] in done:
+                r[_I["facts"]], r[_I["extractor"]] = done[r[_I["url"]]], extract.MODEL
         upsert("web_facts", FACT_COLS, rows, ["run_id", "url"])
-        _stored["at"] = 0.0               # recount on the next status refresh
+        _extract([r for r in rows if r[_I["facts"]] is None and r[_I["markdown"]]], run, save)
+    else:
+        upsert("web_facts", FACT_COLS, rows, ["run_id", "url"])
+    _stored["at"] = 0.0               # recount on the next status refresh
     return len(rows)
+
+
+def _extract(rows: list[list], run: dict | None = None, save=None) -> dict:
+    """Claude fills the facts of these web_facts rows from their page text,
+    with the requirements as they are now; saved every EXTRACT_CHUNK pages.
+    Returns the AI tally (kept on the run too)."""
+    import extract
+    c = config()
+    instructions = extract.system(c)
+    ai = (run if run is not None else {}).setdefault(
+        "ai", {"model": extract.MODEL, "pages": 0, "failed": 0, "usd": 0.0,
+               "input_tokens": 0, "output_tokens": 0})
+
+    def one(r):
+        try:
+            facts, used = extract.extract(r[_I["markdown"]], r[_I["url"]], c, instructions)
+            return facts, used, None
+        except Exception as e:  # noqa: BLE001 — one page failing must not stop the rest
+            return None, {}, jobs.clean(str(e))
+
+    if run is not None and rows:
+        run["extracting"] = {"done": 0, "of": len(rows)}
+        if save:
+            save()
+    for i in range(0, len(rows), EXTRACT_CHUNK):
+        chunk = rows[i:i + EXTRACT_CHUNK]
+        with cf.ThreadPoolExecutor(EXTRACT_WORKERS) as ex:
+            answers = list(ex.map(one, chunk))
+        for r, (facts, used, err) in zip(chunk, answers):
+            ai["pages"] += 1
+            ai["usd"] = round(ai["usd"] + extract.cost(used), 5)
+            ai["input_tokens"] += sum(used.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens",
+                                                               "cache_read_input_tokens"))
+            ai["output_tokens"] += used.get("output_tokens", 0)
+            if facts is None:
+                ai["failed"] += 1
+                r[_I["error"]] = f"Claude could not read it: {err}"[:300]
+                continue
+            r[_I["facts"]], r[_I["mode"]], r[_I["extractor"]] = json.dumps(facts), "structured", extract.MODEL
+            if (r[_I["error"]] or "").startswith("Claude could not read it"):
+                r[_I["error"]] = None
+        upsert("web_facts", FACT_COLS, chunk, ["run_id", "url"])
+        _stored["at"] = 0.0
+        if run is not None:
+            run["extracting"] = {"done": i + len(chunk), "of": len(rows)}
+            if save:
+                save()
+    return ai
+
+
+def extract_stored(all_pages: bool = False, limit: int | None = None) -> dict:
+    """Claude reads pages already stored — no Firecrawl credits. By default the
+    structured pages it could not read; with all_pages, every stored page (after
+    the requirements change)."""
+    if not _lock.acquire(blocking=False):
+        raise FirecrawlError("a run is being collected right now — try again in a few minutes")
+    try:
+        cols = [n for n, _ in FACT_COLS if n != "extractor"]       # older files lack it; it is last
+        where = "markdown IS NOT NULL AND length(markdown) > 0"
+        if not all_pages:
+            where += " AND facts IS NULL AND coalesce(mode, 'structured') = 'structured'"
+        rows = [list(r) + [None] for r in query(
+            f"SELECT {', '.join(chr(34) + n + chr(34) for n in cols)} FROM web_facts WHERE {where} "
+            f"ORDER BY fetched_at DESC" + (f" LIMIT {int(limit)}" if limit else ""))]
+        return _extract(rows) if rows else {"pages": 0}
+    finally:
+        _lock.release()
 
 
 def stop_run() -> dict:
@@ -723,7 +875,8 @@ def stop_run() -> dict:
             raise
     jobs.Job(run["job_id"]).warn("stopped by you")
     time.sleep(2)
-    done = refresh()
+    done = refresh(collect_done=False)
+    collect_soon()                        # what it finished is kept, collected in the background
     return next((r for r in done if r["run_id"] == run["run_id"]), {"run_id": run["run_id"]})
 
 
@@ -845,6 +998,8 @@ def stats() -> dict:
                       "avg_fields_per_business": round(sum(lf.values()) / len(mine), 1) if mine else 0,
                       "linked_pages": follow.get("completed") if follow else 0,
                       "credits_used": (last.get("credits_used") or 0) + ((follow or {}).get("credits_used") or 0),
+                      "ai_usd": round(((last.get("ai") or {}).get("usd") or 0)
+                                      + (((follow or {}).get("ai") or {}).get("usd") or 0), 4),
                       "finished": (follow or last).get("collected_at") if last.get("collected_at") else None,
                       "status": "running" if not last.get("collected_at") or (follow and not follow.get("collected_at"))
                                 else last.get("status")}
@@ -861,7 +1016,9 @@ def progress() -> dict:
     """For the panel's live status: update from Firecrawl (collecting anything
     finished), then the active run, if any, and the statistics."""
     if any(not r.get("collected_at") for r in runs()):
-        refresh()
+        now = refresh(collect_done=False)
+        if any(r.get("status") in ("completed", "failed", "cancelled") for r in now):
+            collect_soon()
     active = [r for r in runs() if not r.get("collected_at")]
     a = active[-1] if active else None
     try:
@@ -870,7 +1027,8 @@ def progress() -> dict:
         cr = {"error": jobs.clean(str(e))}
     return {"credits": cr, "usage": usage(cr), "running": bool(a),
             "active": {k: a.get(k) for k in ("run_id", "kind", "status", "n", "completed", "credits_used",
-                                             "credits_est", "started", "expires_at")} if a else None,
+                                             "credits_est", "started", "expires_at", "extractor",
+                                             "extracting", "ai")} if a else None,
             "stats": stats()}
 
 
@@ -1015,7 +1173,8 @@ def overview() -> dict:
 CAN_PULL = [
     ("Facts you define", "Any field you can describe in a sentence — hours, prices, menu items, services, "
      "brands carried, languages, delivery, booking, payment methods, parking, wheelchair access, "
-     "year founded, 'closed/moved' notices. Firecrawl's AI reads the page and fills them in. 5 credits a page."),
+     "year founded, 'closed/moved' notices. Firecrawl reads the page (1 credit) and Claude Haiku fills "
+     "them in (about a tenth of a cent). Firecrawl's own AI can do it instead, at 5 credits a page."),
     ("The page as text", "The readable content of the page (markdown). 1 credit a page; facts are then "
      "found by searching the text."),
     ("Page details", "Title, description, language, the final address after redirects, and the HTTP status."),

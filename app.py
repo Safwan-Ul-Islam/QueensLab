@@ -673,12 +673,12 @@ CRAWL_JS = """<script>
     stat(box, n('dead'), 'dead — domain gone');
     stat(box, ((c.parked || 0) + (c.hijacked || 0)).toLocaleString(), 'parked or hijacked by spam');
     stat(box, n('platform'), 'not their own site');
-    stat(box, (o.with_facts || 0).toLocaleString(), 'read by Firecrawl');
+    stat(box, (o.with_facts || 0).toLocaleString(), 'pages with facts');
     var ul = $('crawl-canpull').querySelector('ul');
     (o.can_pull || []).forEach(function (p) { var li = el('li'); li.appendChild(el('b', p[0])); li.appendChild(document.createTextNode(' — ' + p[1])); ul.appendChild(li); });
   }).catch(function () { $('crawl-overview').textContent = 'Not available right now.'; });
 
-  var cfg = null, per = {structured: 5, text: 1}, types = ['text', 'number', 'yes/no', 'list', 'prices'];
+  var cfg = null, per = {structured: 5, text: 1, claude: 1}, types = ['text', 'number', 'yes/no', 'list', 'prices'];
   function fieldRow(f) {
     var tr = el('tr');
     var name = el('input'); name.value = f.name || ''; name.placeholder = 'field_name';
@@ -691,7 +691,12 @@ CRAWL_JS = """<script>
   function estimate() {
     var m = $('cfg-mode').value, k = parseInt($('crawl-limit').value || '0', 10);
     var f = m === 'structured' ? parseInt($('cfg-follow').value || '0', 10) : 0;
-    $('crawl-estimate').textContent = 'up to ' + (k * per[m] * (1 + f)).toLocaleString() + ' credits';
+    var claude = m === 'structured' && $('cfg-extractor').value === 'claude';
+    $('cfg-extractor').disabled = m !== 'structured';
+    var rate = m === 'text' ? per.text : (claude ? per.claude : per.structured);
+    // ~0.12¢ a page measured on 20 pages (Haiku 5.5 prices); 0.2¢ leaves room for long pages
+    $('crawl-estimate').textContent = 'up to ' + (k * rate * (1 + f)).toLocaleString() + ' credits' +
+      (claude ? ' + about $' + Math.max(0.01, k * (1 + f) * 0.002).toFixed(2) + ' of Claude' : '');
   }
   function load() {
     msg('Loading…');
@@ -706,11 +711,13 @@ CRAWL_JS = """<script>
       stat(s, pe ? pe.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', timeZone: 'UTC'}) : '—', 'credits renew');
       var runs = $('crawl-runs'); runs.textContent = '';
       (d.runs || []).slice().reverse().slice(0, 5).forEach(function (r) {
-        runs.appendChild(el('div', r.started.slice(0, 16).replace('T', ' ') + ' UTC · ' + r.n + ' sites · ' + r.mode + ' · ' +
+        runs.appendChild(el('div', r.started.slice(0, 16).replace('T', ' ') + ' UTC · ' + r.n + ' sites · ' +
+          (r.mode === 'text' ? 'text' : (r.extractor === 'claude' ? 'facts by Claude' : 'facts by Firecrawl')) + ' · ' +
           (r.status || '') + ' ' + (r.completed || 0) + '/' + r.n + ' · ' + (r.credits_used || 0) + ' credits' +
+          (r.ai && r.ai.pages ? ' · Claude $' + r.ai.usd.toFixed(3) : '') +
           (r.collected_at ? ' · collected' : (r.expires_at ? ' · results kept until ' + r.expires_at.slice(0, 16).replace('T', ' ') : '')), 'muted'));
       });
-      $('cfg-mode').value = cfg.mode; $('cfg-prompt').value = cfg.prompt;
+      $('cfg-mode').value = cfg.mode; $('cfg-extractor').value = cfg.extractor || 'claude'; $('cfg-prompt').value = cfg.prompt;
       $('cfg-recrawl').value = cfg.recrawl_days; $('cfg-conf').value = cfg.filters.min_confidence;
       $('cfg-blocked').checked = !!cfg.include_blocked;
       $('cfg-follow').value = cfg.follow_links || 0; $('cfg-evidence').checked = !!cfg.evidence;
@@ -765,21 +772,32 @@ CRAWL_JS = """<script>
         item('used this billing period', (u.this_period || 0).toLocaleString());
         if (u.this_run != null) item('used by this run so far', (u.this_run || 0).toLocaleString());
         item('used all time', (u.all_time || 0).toLocaleString());
+        if (u.ai_usd) item('of Claude for reading pages (recent runs)', '$' + u.ai_usd.toFixed(2));
         if (cr.period_end) item('renews', cr.period_end.slice(0, 10));
       }
       if (d.running && a) {
         box.className = 'live running';
-        var pct = a.n ? Math.round(100 * (a.completed || 0) / a.n) : 0;
-        $('live-title').textContent = a.kind === 'follow' ? 'Running — reading linked pages' : 'Running at Firecrawl';
-        $('live-detail').textContent = (a.completed || 0) + ' of ' + a.n + ' pages done · ' + (a.credits_used || 0) +
-          ' credits used · started ' + (a.started || '').slice(11, 16) + ' UTC · updates every 6 s';
+        var x = a.extracting, pct = x ? (x.of ? Math.round(100 * x.done / x.of) : 100)
+                                      : (a.n ? Math.round(100 * (a.completed || 0) / a.n) : 0);
+        if (x) {
+          $('live-title').textContent = 'Claude is reading the pages' + (a.kind === 'follow' ? ' (linked pages)' : '');
+          $('live-detail').textContent = x.done + ' of ' + x.of + ' pages read by Claude · ' + (a.completed || 0) +
+            ' fetched by Firecrawl · ' + (a.credits_used || 0) + ' credits' +
+            (a.ai ? ' · $' + a.ai.usd.toFixed(3) + ' of Claude' : '') + ' · saved every 50 pages';
+        } else {
+          $('live-title').textContent = a.kind === 'follow' ? 'Running — reading linked pages' : 'Running at Firecrawl';
+          $('live-detail').textContent = (a.completed || 0) + ' of ' + a.n + ' pages done · ' + (a.credits_used || 0) +
+            ' credits used · started ' + (a.started || '').slice(11, 16) + ' UTC · updates every 6 s' +
+            (a.extractor === 'claude' ? ' · then Claude reads them' : '');
+        }
         $('live-bar').style.width = pct + '%';
       } else if (last) {
         box.className = 'live ' + (last.status === 'completed' ? 'done' : (last.status === 'running' ? 'running' : 'failed'));
         $('live-title').textContent = last.status === 'completed' ? 'Finished' : ('Last run: ' + last.status);
         $('live-detail').textContent = (last.finished ? last.finished.slice(0, 16).replace('T', ' ') + ' UTC · ' : '') +
           (last.returned || 0) + ' of ' + (last.sent || 0) + ' sites read · ' + (last.linked_pages || 0) + ' linked pages · ' +
-          last.businesses_with_facts + ' businesses with facts · ' + last.facts_filled + ' facts · ' + last.credits_used + ' credits';
+          last.businesses_with_facts + ' businesses with facts · ' + last.facts_filled + ' facts · ' + last.credits_used + ' credits' +
+          (last.ai_usd ? ' · $' + last.ai_usd.toFixed(3) + ' of Claude' : '');
         $('live-bar').style.width = '100%';
       } else {
         box.className = 'live idle'; $('live-title').textContent = 'Idle';
@@ -808,7 +826,10 @@ CRAWL_JS = """<script>
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden && wasRunning) live(); });
   function act(p, method, path, body, done) {
-    msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); live(); }).catch(function (e) { msg(e.message); });
+    // load() clears the message, so the result is shown after it (unless load reported an error)
+    msg(p); api(method, path, body).then(function (r) {
+      load().then(function () { if (!$('crawl-msg').textContent) msg(done || 'Done.'); }); live();
+    }).catch(function (e) { msg(e.message); });
   }
   $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); };
   if (token) { $('crawl-token').value = token; }
@@ -816,7 +837,7 @@ CRAWL_JS = """<script>
   $('crawl-panel').addEventListener('toggle', function () {
     if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); }
   });
-  $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-follow').oninput = estimate;
+  $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-extractor').onchange = estimate; $('cfg-follow').oninput = estimate;
   $('crawl-start').onclick = function () {
     var k = parseInt($('crawl-limit').value, 10);
     if (!confirm('Send ' + k + ' sites to Firecrawl? ' + $('crawl-estimate').textContent + '.')) return;
@@ -826,7 +847,8 @@ CRAWL_JS = """<script>
     wasRunning = true;
   };
   $('crawl-stop').onclick = function () { if (confirm('Stop the run? What it finished is kept.')) act('Stopping…', 'POST', '/api/crawl/stop'); };
-  $('crawl-collect').onclick = function () { act('Checking Firecrawl…', 'POST', '/api/crawl/collect'); };
+  $('crawl-collect').onclick = function () { act('Checking Firecrawl…', 'POST', '/api/crawl/collect', undefined,
+    'Checked. Anything finished is being collected — the status above shows it.'); };
   $('check-start').onclick = function () { act('Starting the check…', 'POST', '/api/crawl/check', {limit: parseInt($('check-limit').value, 10)}, 'Checking — see Collection below.'); };
   $('cfg-add').onclick = function () { fieldRow({type: 'text'}); };
   $('cfg-save').onclick = function () {
@@ -836,7 +858,7 @@ CRAWL_JS = """<script>
       if (i[0].value.trim()) fields.push({name: i[0].value, type: i[1].value, description: i[2].value});
     });
     var split = function (v) { return v.split(',').map(function (x) { return x.trim(); }).filter(Boolean); };
-    act('Saving…', 'POST', '/api/crawl/config', {mode: $('cfg-mode').value, prompt: $('cfg-prompt').value, fields: fields,
+    act('Saving…', 'POST', '/api/crawl/config', {mode: $('cfg-mode').value, extractor: $('cfg-extractor').value, prompt: $('cfg-prompt').value, fields: fields,
       recrawl_days: parseInt($('cfg-recrawl').value, 10), default_batch: parseInt($('crawl-limit').value, 10),
       include_blocked: $('cfg-blocked').checked, evidence: $('cfg-evidence').checked,
       follow_links: parseInt($('cfg-follow').value || '0', 10),
@@ -1223,8 +1245,11 @@ def render(sql: str = "", result: str = "") -> str:
         </div>
         <h3>Requirements — what to extract</h3>
         <div class="pnl-row">
-          <label>Mode <select id="cfg-mode"><option value="structured">Structured facts (5 credits/page)</option>
+          <label>Mode <select id="cfg-mode"><option value="structured">Structured facts</option>
             <option value="text">Page text only (1 credit/page)</option></select></label>
+          <label>Facts read by <select id="cfg-extractor">
+            <option value="claude">Claude Haiku (1 credit + ~0.1¢ a page)</option>
+            <option value="firecrawl">Firecrawl AI (5 credits a page)</option></select></label>
           <label>Re-read after <input id="cfg-recrawl" type="number" min="1" max="365"> days</label>
           <label>Min. confidence <input id="cfg-conf" type="number" min="0" max="1" step="0.05"></label>
           <label><input id="cfg-blocked" type="checkbox"> also try sites with a bot wall (often fail, still cost)</label>
@@ -1468,7 +1493,7 @@ def crawl_admin(request: Request):
         ok = ck.CRAWLABLE if c.get("include_blocked") else ("alive", "alive_js")
         waiting = ck.query(f"""SELECT count(DISTINCT domain) FROM site_checks
                                WHERE status IN {ok}""")[0][0]
-        return {"credits": cr, "config": c, "credits_per_page": ck.CREDITS,
+        return {"credits": cr, "config": c, "credits_per_page": {**ck.CREDITS, "claude": ck.CLAUDE_CREDITS},
                 "field_types": list(ck.FIELD_TYPES), "crawlable_sites": waiting,
                 "runs": [{k: v for k, v in r.items() if k != "urls"} for r in ck.runs()][-10:],
                 "results": {"columns": cols, "total": total,
@@ -1613,7 +1638,9 @@ def crawl_collect(request: Request):
     denied = _admin_error(request)
     if denied:
         return denied
-    return _crawl_call(lambda: {"runs": _ck().refresh()})
+    # Claude reading a run's pages takes minutes: collect in the background,
+    # the live status shows it
+    return _crawl_call(lambda: {"runs": _ck().refresh(collect_done=False), "collecting": _ck().collect_soon()})
 
 
 @app.post("/api/crawl/check")

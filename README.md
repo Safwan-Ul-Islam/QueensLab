@@ -93,8 +93,13 @@ result and the error. Shown on the page (Collection), at `/api/jobs`, and by
 3. **Requirements** — the fields to extract (name, type, description), the
    instructions, filters by category or neighbourhood, how often to re-read — are
    edited in the page's **control panel** or `crawl.py config`, and stored in the
-   bucket so the laptop and the server share them. Structured mode costs 5
-   credits a page, text mode 1.
+   bucket so the laptop and the server share them. Structured mode: Firecrawl
+   reads the page as text (1 credit) and **Claude Haiku fills the fields**
+   (`extract.py`, about a tenth of a cent a page). Firecrawl's own AI extraction
+   (5 credits a page) is still an option ("Facts read by" in the panel). Text mode: 1 credit.
+   Tested on the same 20 pages before switching: Haiku 96.8% of 500 values right,
+   Firecrawl's extraction 86.6%. Pages are stored as text, so new requirements can
+   be read from them again without Firecrawl: `python crawl.py extract --all`.
 
 **One Query box, three buttons:** *Free data* (the public tables, open to everyone), *Firecrawl data*
 (`web_latest`, `web_facts`, `site_checks` — password) and *Mixed* (both, public tables under their own

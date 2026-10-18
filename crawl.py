@@ -7,6 +7,8 @@ page's control panel (crawlkit.py); use whichever is handier.
     python crawl.py status              progress of the run at Firecrawl, credits left
     python crawl.py collect             fetch finished results into scraped/web_facts
     python crawl.py stop                cancel the run, keep what it finished
+    python crawl.py extract [--all]     Claude reads stored pages again, no credits: the ones it
+                                        could not read, or --all (after the requirements change)
     python crawl.py config              show the requirements (what is extracted)
     python crawl.py results [--limit N]
 
@@ -26,7 +28,9 @@ import jobs  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["check", "start", "status", "collect", "stop", "config", "results"])
+    ap.add_argument("cmd", choices=["check", "start", "status", "collect", "stop", "config", "results",
+                                       "extract"])
+    ap.add_argument("--all", action="store_true", help="extract: every stored page")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--run", help=argparse.SUPPRESS)       # the web app's run id
     a = ap.parse_args()
@@ -52,6 +56,8 @@ def main() -> int:
                                                                        or True)}, indent=1, default=str))
         elif a.cmd == "stop":
             print(json.dumps(ck.stop_run(), indent=1, default=str))
+        elif a.cmd == "extract":
+            print(json.dumps(ck.extract_stored(all_pages=a.all, limit=a.limit), indent=1))
         elif a.cmd == "config":
             print(json.dumps(ck.config(), indent=1))
         elif a.cmd == "results":
