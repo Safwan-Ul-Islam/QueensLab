@@ -101,6 +101,11 @@ a typed column per field), `web_facts` (every page, with its full text), `site_c
 public table as `q.<table>` — read-only, 500 rows, with clickable examples and CSV download.
 Structured runs keep each page's full text too (no extra credits).
 
+**Ask in plain English** (both Query boxes, `ask.py`): Claude writes one SQL query from the
+question, it runs on the real tables, and the page shows the SQL beside the result — nothing is
+answered from the model's memory. Needs the panel password and `ANTHROPIC_API_KEY`; ~3k tokens
+of table description per question (cached), a daily cap of 300 questions (`ASK_DAILY_LIMIT`).
+
 The control panel (Websites → Control panel) needs the password in `FETCH_TOKEN`
 and `FIRECRAWL_API_KEY`, both in Render's Environment tab. Results stay in
 `scraped/` — research only, never committed, never merged into BizGenome.

@@ -26,5 +26,9 @@ services:
       # Firecrawl, for the Websites control panel (research only).
       - key: FIRECRAWL_API_KEY
         sync: false
+      # Claude, for "Ask in plain English" (writes SQL; answers come from the data).
+      # Use a key made just for QueensLab so its spend is visible on its own.
+      - key: ANTHROPIC_API_KEY
+        sync: false
       # ⚠️ DELIBERATELY NO DATABASE_URL. This service must never be able to
       # reach BizGenome's Neon database. Its only store is a local DuckDB file.

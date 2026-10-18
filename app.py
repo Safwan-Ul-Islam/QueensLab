@@ -326,6 +326,13 @@ td.l,th.l{text-align:left}
 .fbar{display:grid;grid-template-columns:200px 1fr 90px;gap:10px;align-items:center;font-size:12.5px;margin:3px 0}
 .fbar .t{height:8px;background:#eef1f5;border-radius:4px;overflow:hidden}
 .fbar .t div{height:100%;background:var(--good)}
+.ask{display:flex;gap:8px;margin:8px 0}
+.ask input{flex:1;font:14px 'Inter',sans-serif;padding:10px 13px;border:1px solid #dde2ea;border-radius:10px}
+.ask button{margin-top:0}
+.ask-out{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0 12px;background:var(--soft)}
+.ask-out pre{white-space:pre-wrap;font:12px 'SFMono-Regular',Menlo,monospace;background:#fff;
+ border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:8px 0}
+.ask-out .why{font-weight:600}
 .busy{background:#fff8e6;border:1px solid #f3dfae;color:#7a5200;border-radius:11px;
  padding:12px 16px;margin:26px 0 0;font-size:14px}
 .empty{background:var(--soft);border:1px dashed #dde2ea;border-radius:11px;padding:20px;
@@ -766,6 +773,68 @@ CRAWL_JS = """<script>
 </script>"""
 
 
+ASK_JS = """<script>
+/* Plain English -> SQL. The answer shown is the query's RESULT; the SQL is
+   shown beside it. Everything returned is set as text, never HTML. */
+(function () {
+  function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+  function token() {
+    var t = '';
+    try { t = localStorage.getItem('ql_token') || ''; } catch (e) {}
+    if (!t) {
+      t = window.prompt('Password (the control panel password):') || '';
+      if (t) { try { localStorage.setItem('ql_token', t); } catch (e) {} }
+    }
+    return t;
+  }
+  function wire(scope, sqlBoxId) {
+    var input = document.getElementById('ask-q-' + scope), btn = document.getElementById('ask-b-' + scope);
+    var out = document.getElementById('ask-r-' + scope);
+    if (!input || !btn) return;
+    function go() {
+      var qtext = input.value.trim(); if (!qtext) return;
+      var t = token(); if (!t) return;
+      out.textContent = ''; var box = el('div', null, 'ask-out'); out.appendChild(box);
+      box.appendChild(el('span', 'Thinking… Claude is writing the query.', 'muted'));
+      btn.disabled = true;
+      fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Fetch-Token': t},
+                         body: JSON.stringify({question: qtext, scope: scope})})
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); })
+        .then(function (d) {
+          box.textContent = '';
+          box.appendChild(el('div', d.why || '', 'why'));
+          if (d.sql) {
+            box.appendChild(el('pre', d.sql));
+            var sb = document.getElementById(sqlBoxId); if (sb) sb.value = d.sql;
+          }
+          if (d.error) { box.appendChild(el('div', d.error, 'err')); }
+          if (d.rows && d.rows.length) {
+            var wrap = el('div', null, 'scroll'), tb = el('table'), hr = el('tr');
+            d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
+            var th = el('thead'); th.appendChild(hr); tb.appendChild(th); var body = el('tbody');
+            d.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); body.appendChild(tr); });
+            tb.appendChild(body); wrap.appendChild(tb); box.appendChild(wrap);
+          } else if (d.sql && !d.error) { box.appendChild(el('div', 'The query ran and returned no rows.', 'muted')); }
+          var tk = d.tokens || {};
+          box.appendChild(el('p', (d.rows ? d.rows.length : 0) + ' row(s)' + (d.truncated ? ' (first 200)' : '') + ' · ' +
+            d.model + ' · ' + (tk.input || 0) + ' in / ' + (tk.output || 0) + ' out tokens' +
+            (tk.cache_read ? ' (+' + tk.cache_read + ' cached)' : '') + (d.attempts > 1 ? ' · fixed on retry' : ''), 'note'));
+        })
+        .catch(function (e) {
+          box.textContent = ''; box.appendChild(el('div', e.message, 'err'));
+          if (/password/i.test(e.message)) { try { localStorage.removeItem('ql_token'); } catch (x) {} }
+        })
+        .then(function () { btn.disabled = false; });
+    }
+    btn.onclick = go;
+    input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') go(); });
+  }
+  wire('public', 'sql-box');
+  wire('crawl', 'aq-sql');
+})();
+</script>"""
+
+
 def table_html(cols, rows) -> str:
     if not rows:
         return '<div class="empty">No rows.</div>'
@@ -963,6 +1032,9 @@ def render(sql: str = "", result: str = "") -> str:
           <code>site_checks</code> (the free website check), and every public table as
           <code>q.&lt;table&gt;</code> (e.g. <code>q.nta_profile</code>, <code>q.overture_places</code>).
           Read-only; results cap at 500 rows.</p>
+        <div class="ask"><input id="ask-q-crawl" placeholder="Ask in plain English — e.g. Which restaurants in Flushing are open late, and what do they charge?">
+          <button type="button" id="ask-b-crawl">Ask</button></div>
+        <div id="ask-r-crawl"></div>
         <div class="pnl-row" id="aq-examples"></div>
         <textarea id="aq-sql" rows="5" placeholder="SELECT name, opening_hours FROM web_latest LIMIT 20"></textarea>
         <div class="pnl-row"><button type="button" id="aq-run">Run query</button>
@@ -987,8 +1059,13 @@ def render(sql: str = "", result: str = "") -> str:
   <section id="query">
     <h2>Query</h2>
     <p class="note">Read-only SQL over the loaded tables. Results cap at 200 rows.</p>
+    <div class="ask"><input id="ask-q-public" placeholder="Ask in plain English — e.g. Which 5 neighbourhoods have the most restaurants per resident?">
+      <button type="button" id="ask-b-public">Ask</button></div>
+    <p class="note">Claude writes the SQL, it runs on the real tables, and you see both. Needs the
+      control panel password (it uses Anthropic credits).</p>
+    <div id="ask-r-public"></div>
     <form method="get" action="/query">
-      <textarea name="sql" rows="3"
+      <textarea id="sql-box" name="sql" rows="3"
         placeholder="SELECT business_category, count(*) AS n FROM dcwp_licences GROUP BY 1 ORDER BY n DESC LIMIT 10">{html.escape(sql)}</textarea>
       <button type="submit">Run query</button>
     </form>
@@ -1001,6 +1078,7 @@ def render(sql: str = "", result: str = "") -> str:
 </div>
 {NB_JS}
 {CRAWL_JS}
+{ASK_JS}
 <script>
 /* Keep the collection table current every 10 s, but ONLY while something is
    queued or running, and only while the tab is visible. Polling forever kept
@@ -1190,24 +1268,67 @@ async def crawl_query(request: Request):
         return JSONResponse({"error": why}, status_code=400)
 
     def run():
-        con = _ck().analysis_db()
-        timer = threading.Timer(QUERY_SECONDS, con.interrupt)
-        timer.start()
-        try:
-            cur = con.execute(sql)
-            cols = [d[0] for d in cur.description]
-            rows = cur.fetchmany(501)
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)
-            if "INTERRUPT" in msg.upper():
-                msg = f"Stopped after {QUERY_SECONDS} seconds. Try a narrower query."
-            raise ValueError(msg[:300]) from None
-        finally:
-            timer.cancel()
-            con.close()
+        cols, rows = _run_analysis(sql, 501)
         return {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows[:500]],
                 "truncated": len(rows) > 500}
     return _crawl_call(run)
+
+
+def _run_analysis(sql: str, limit: int):
+    """One query on the private analysis database, interrupted after QUERY_SECONDS."""
+    con = _ck().analysis_db()
+    timer = threading.Timer(QUERY_SECONDS, con.interrupt)
+    timer.start()
+    try:
+        cur = con.execute(sql)
+        return [d[0] for d in cur.description], cur.fetchmany(limit)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "INTERRUPT" in msg.upper():
+            msg = f"Stopped after {QUERY_SECONDS} seconds. Try a narrower query."
+        raise ValueError(msg[:300]) from None
+    finally:
+        timer.cancel()
+        con.close()
+
+
+@app.post("/api/ask")
+async def ask_question(request: Request):
+    """Plain English -> SQL (written by Claude) -> run on the real data.
+    Costs Anthropic tokens, so it needs the panel password."""
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    import ask as A
+    body = await request.json()
+    scope = "crawl" if body.get("scope") == "crawl" else "public"
+    question = body.get("question") or ""
+
+    def go():
+        if scope == "public":
+            c = con()
+            if not c:
+                raise ValueError("the database is busy or not loaded — try again in a minute")
+
+            def run(sql):
+                cols, rows = q(sql, limit=A.ROW_LIMIT + 1)
+                if cols == ["error"]:
+                    raise ValueError(rows[0][0])
+                return cols, rows
+            try:
+                out = A.answer(question, scope, c, _one_read, run)
+            finally:
+                c.close()
+        else:
+            dc = _ck().analysis_db()
+            try:
+                out = A.answer(question, scope, dc, _one_read,
+                               lambda sql: _run_analysis(sql, A.ROW_LIMIT + 1))
+            finally:
+                dc.close()
+        out["rows"] = [[None if v is None else str(v) for v in r] for r in out["rows"]]
+        return out
+    return _crawl_call(go)
 
 
 @app.get("/api/crawl/examples")
