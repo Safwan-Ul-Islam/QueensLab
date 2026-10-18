@@ -808,7 +808,7 @@ CRAWL_JS = """<script>
       stat(t, (st.businesses_read || 0).toLocaleString(), 'businesses read');
       stat(t, (st.pages_read || 0).toLocaleString(), 'pages read');
       stat(t, (st.facts_filled || 0).toLocaleString(), 'facts filled');
-      stat(t, st.stored_in_bucket == null ? '—' : st.stored_in_bucket.toLocaleString(), 'pages saved in the bucket');
+      stat(t, st.stored_in_bucket == null ? '—' : st.stored_in_bucket.toLocaleString(), 'rows saved in the bucket (failed sites included)');
       $('stat-last').textContent = last ? ('Latest run: ' + last.sent + ' sites sent, ' + last.returned + ' read, ' +
         last.businesses_with_facts + ' businesses with facts, ' + last.avg_fields_per_business + ' fields filled per business on average.') : '';
       var f = $('stat-fields'); f.textContent = '';

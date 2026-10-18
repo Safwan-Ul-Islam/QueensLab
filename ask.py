@@ -81,8 +81,8 @@ The crawled website tables (research only):
   {item, price, currency, unit} → unnest(from_json(prices,
   '[{"item":"VARCHAR","price":"DOUBLE","currency":"VARCHAR","unit":"VARCHAR"}]')) t(p), then p.item, p.price.
   nta2020 joins q.nta_profile.code. `evidence` is JSON quotes per field.
-- web_facts: every page read: url, title, http_status, facts (JSON text), markdown (the page text — search
-  it with ILIKE), fetched_at, run_id, page_kind ('home' or 'follow'), extractor (who filled facts: a
+- web_facts: every page sent to Firecrawl: url, title, http_status, facts (JSON text), markdown (the page
+  text — search it with ILIKE; NULL with `error` set when Firecrawl could not read the site), fetched_at, run_id, page_kind ('home' or 'follow'), extractor (who filled facts: a
   Claude model name or 'firecrawl'; empty on reads before 2026-10-18, which were Firecrawl).
 - site_checks: the free website check, one row per business: status is one of alive, alive_js, blocked,
   dead (domain gone), parked, hijacked (spam), platform (not their own site), error, unreachable;

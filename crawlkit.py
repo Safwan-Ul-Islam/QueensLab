@@ -74,7 +74,7 @@ PLATFORMS = ("facebook.", "instagram.", "yelp.", "google.", "goo.gl", "tiktok.",
              "resy.", "toasttab.", "menufy.", "slicelife.", "beyondmenu.", "chownow.",
              "allmenus.", "menupages.", "zocdoc.", "healthgrades.", "vagaro.", "booksy.",
              "styleseat.", "groupon.", "mapquest.", "yellowpages.", "bbb.org", "nextdoor.",
-             "linkedin.", "youtube.", "wa.me", "whatsapp.", "apple.com", "amazon.")
+             "linkedin.", "youtube.", "wa.me", "wa.link", "whatsapp.", "apple.com", "amazon.")
 PARKED = re.compile(r"domain (is )?(for sale|may be for sale|parked)|buy this domain|this domain"
                     r"( name)? (is|has) (for sale|expired)|hugedomains|sedo\.com|dan\.com|afternic|"
                     r"godaddy\.com/domains|parkingcrew|bodis\.com|domain has expired|"
@@ -719,8 +719,8 @@ def _refresh(collect_done: bool) -> list[dict]:
             job.upload("uploaded" if gcs.enabled() else "off",
                        gcs.url("web_facts.parquet", PREFIX) if gcs.enabled() else "no bucket")
             if n < run["n"]:
-                job.warn(f"{run['n'] - n} of {run['n']} sites came back empty from Firecrawl "
-                         "(not charged)")
+                job.warn(f"{run['n'] - n} of {run['n']} sites could not be read by Firecrawl (not charged; "
+                         f"skipped for {config()['recrawl_days']} days, reasons in web_facts.error)")
             ai = run.get("ai")
             if ai and ai.get("pages"):
                 job.warn(f"Claude read {ai['pages'] - ai['failed']} of {ai['pages']} pages · ${ai['usd']:.3f}"
@@ -777,6 +777,10 @@ def _collect(run: dict, first: dict, save=None) -> int:
         if not nxt:
             break
         page = _api("GET", nxt)
+    read = len(rows)
+    failed = _failed_rows(run, now, {r[_I["url"]] for r in rows})
+    run["failed"] = len(failed)
+    rows += failed
     if not rows:
         return 0
     if run.get("extractor") == "claude":
@@ -791,7 +795,33 @@ def _collect(run: dict, first: dict, save=None) -> int:
     else:
         upsert("web_facts", FACT_COLS, rows, ["run_id", "url"])
     _stored["at"] = 0.0               # recount on the next status refresh
-    return len(rows)
+    return read
+
+
+def _failed_rows(run: dict, now, seen: set) -> list[list]:
+    """Sites Firecrawl could not read (not charged): one row each with the
+    reason, so the next runs skip them for recrawl_days. Until 2026-10-18 they
+    left no trace, and the same failing sites topped every run's list (two
+    test runs read 0 of 3 and 0 of 6; one the hour before, 1 of 20)."""
+    by_url = {u[4]: u for u in run.get("urls", [])}
+    try:
+        e = _api("GET", f"/batch/scrape/{run['batch_id']}/errors")
+    except FirecrawlError:
+        e = {}
+    bad = [(x.get("url"), f"{x.get('code') or 'failed'}: {x.get('error') or ''}") for x in e.get("errors") or []]
+    bad += [(u, "blocked by robots.txt") for u in e.get("robotsBlocked") or []]
+    bad += [(u, "Firecrawl refused the URL as invalid") for u in run.get("invalid") or []]
+    rows = []
+    for url, why in bad:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        pid, name, cat, nta, url = by_url.get(url) or by_url.get(url.rstrip("/")) or by_url.get(url + "/") \
+            or (None, None, None, None, url)
+        rows.append([run["run_id"], pid, name, cat, nta, url, None, None, None, run["mode"], None, None,
+                     jobs.clean(why)[:300], now, run.get("parent") or run["run_id"],
+                     run.get("kind") or "home", None])
+    return rows
 
 
 def _extract(rows: list[list], run: dict | None = None, save=None) -> dict:
@@ -980,8 +1010,9 @@ def stats() -> dict:
     names = [f["name"] for f in c["fields"] if f["name"] != LINKS_FIELD]
     vis = _visits()
     latest = [vs[-1] for vs in vis.values()]
-    pages, with_facts, errors = query(
-        "SELECT count(*), count(facts), count(*) FILTER (WHERE facts IS NULL) FROM web_facts")[0]
+    pages, with_facts, errors, rows = query(
+        "SELECT count(*) FILTER (WHERE markdown IS NOT NULL OR facts IS NOT NULL), count(facts), "
+        "count(*) FILTER (WHERE markdown IS NULL AND facts IS NULL), count(*) FROM web_facts")[0]
     stored = _stored_count()
     fill = _fill(latest, names)
     total_filled = sum(fill.values())
@@ -1004,7 +1035,7 @@ def stats() -> dict:
                       "status": "running" if not last.get("collected_at") or (follow and not follow.get("collected_at"))
                                 else last.get("status")}
     return {"businesses_read": len(latest), "pages_read": pages, "pages_with_facts": with_facts,
-            "pages_failed": errors, "stored_in_bucket": stored, "local_rows": pages,
+            "pages_failed": errors, "stored_in_bucket": stored, "local_rows": rows,
             "facts_filled": total_filled, "fields": len(names),
             "field_fill": [{"field": n, "filled": fill[n],
                             "yes_no": any(f["name"] == n and f["type"] == "yes/no" for f in c["fields"]),
@@ -1158,7 +1189,8 @@ EXAMPLES = {
 def overview() -> dict:
     """Public-safe summary: no URLs, no extracted text."""
     checks = dict(query("SELECT status, count(*) FROM site_checks GROUP BY 1"))
-    facts = query("SELECT count(*), count(facts), max(fetched_at), "
+    facts = query("SELECT count(*) FILTER (WHERE markdown IS NOT NULL OR facts IS NOT NULL), "
+                  "count(facts), max(fetched_at), "
                   "count(DISTINCT place_id) FILTER (WHERE facts IS NOT NULL) FROM web_facts")[0]
     last_check = query("SELECT max(checked_at) FROM site_checks")[0][0]
     active = [{k: r.get(k) for k in ("run_id", "status", "n", "completed", "credits_used",
