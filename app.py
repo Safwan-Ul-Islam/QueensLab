@@ -793,6 +793,7 @@ QUERY_JS = r"""<script>
   function status() {
     var box = $('scope-status'); box.textContent = '';
     if (scope === 'free') return;
+    box.textContent = 'Loading the Firecrawl data status…';
     fetch('/api/crawl/overview').then(function (r) { return r.json(); }).then(function (o) {
       box.textContent = 'Firecrawl data right now: ' + (o.businesses_read || 0).toLocaleString() + ' businesses read (' +
         (o.with_facts || 0).toLocaleString() + ' pages) · last collected ' +
@@ -1127,6 +1128,16 @@ def render(sql: str = "", result: str = "") -> str:
 }})();
 </script>
 </body></html>"""
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """A small icon, so browsers stop logging a 404 for it."""
+    from fastapi.responses import Response
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" '
+           'rx="7" fill="#15171c"/><text x="16" y="22" font-size="17" text-anchor="middle" '
+           'font-family="Arial" font-weight="700" fill="#fff">Q</text></svg>')
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/status")
