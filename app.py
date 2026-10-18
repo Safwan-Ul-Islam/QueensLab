@@ -260,7 +260,8 @@ h2{font-size:19px;font-weight:650;letter-spacing:-.024em;margin:0 0 4px}
 .note{color:var(--muted);font-size:13.5px;margin:0 0 16px;max-width:76ch}
 
 /* cards */
-.card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 0 14px}
+.card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 0 14px;overflow-x:auto}
+nav{max-width:100%;overflow-x:auto}
 .card h3{font-size:14.5px;font-weight:650;margin:0 0 12px;letter-spacing:-.015em}
 
 table{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
@@ -307,7 +308,9 @@ td.l,th.l{text-align:left}
 .panel .blk{display:block}
 .cfg input,.cfg select{width:100%}
 .cfg td{padding:4px 6px 4px 0}
-#crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
+#crawl-results table.preview{table-layout:fixed}
+#crawl-results table.preview td{white-space:nowrap;font-size:12.5px;overflow:hidden;text-overflow:ellipsis}
+#crawl-results table.preview th:first-child{width:26%}
 .credits{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;font-size:13.5px}
 .credits b{font-size:15px}
 .credits .bad{color:#b42318;font-weight:600}
@@ -330,12 +333,64 @@ td.l,th.l{text-align:left}
 #q-examples button{font-weight:500}
 #q-out td{white-space:normal;min-width:100px;font-size:12.5px}
 .ask{display:flex;gap:8px;margin:8px 0}
-.ask input{flex:1;font:14px 'Inter',sans-serif;padding:10px 13px;border:1px solid #dde2ea;border-radius:10px}
-.ask button{margin-top:0}
+.ask input{flex:1;font:16px 'Inter',sans-serif;padding:15px 18px;border:1.5px solid #cfd5df;
+ border-radius:12px;min-height:54px}
+.ask input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+.ask button{margin-top:0;padding:0 28px;font-size:15px;border-radius:12px}
 .ask-out{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0 12px;background:var(--soft)}
 .ask-out pre{white-space:pre-wrap;font:12px 'SFMono-Regular',Menlo,monospace;background:#fff;
  border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:8px 0}
 .ask-out .why{font-weight:600}
+#collection:not(.show-all) #jobs tr.more{display:none}
+button.toggle{margin-top:10px;background:#fff;color:var(--ink);border:1px solid #dde2ea;padding:8px 18px;font-size:13px}
+button.toggle:hover{background:#f3f5f8;color:var(--ink)}
+
+/* ── Firecrawl: deep, vivid orange and white ─────────────────────────── */
+/* Text sits only on the deep oranges (white on #7C2D12..#C2410C = 9.4..5.2:1).
+   The bright ones (#EA580C, #F97316: 3.6 / 2.8:1 under white) are for bars,
+   borders and dots — never under text (accessibility review, 2026-10-18). */
+#websites{--fc-900:#7C2D12;--fc-800:#9A3412;--fc-700:#C2410C;--fc-600:#EA580C;--fc-500:#F97316;--fc-200:#FED7AA;
+ --fc-100:#FFEDD5;--fc-50:#FFF7ED}
+#websites .fc-hero{position:relative;overflow:hidden;color:#fff;border-radius:16px;padding:22px 24px 20px;
+ background:linear-gradient(120deg,var(--fc-900),var(--fc-800) 30%,var(--fc-700) 55%,#B4380D 75%,var(--fc-800));
+ background-size:260% 260%;animation:fcflow 14s ease-in-out infinite;box-shadow:0 10px 30px -14px rgba(194,65,12,.55)}
+#websites .fc-hero h2{color:#fff;font-size:21px}
+#websites .fc-hero .note{color:rgba(255,255,255,.93);margin:6px 0 0;max-width:80ch}
+#websites .fc-hero .note b{color:#fff}
+#websites .fc-tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+ background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:3px 10px;margin-bottom:8px}
+@keyframes fcflow{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@media (prefers-reduced-motion:reduce){#websites .fc-hero{animation:none}}
+#websites .stat{background:#fff;border:1px solid var(--fc-200);box-shadow:inset 0 3px 0 var(--fc-600)}
+#websites .stat b{color:var(--fc-700)}
+#websites .stat span{color:#8A5A3C}
+#websites .defs summary,#websites .panel>summary{color:var(--fc-700)}
+#websites .panel{border:1.5px solid var(--fc-200);background:#fff}
+#websites .panel>summary{font-size:15px;padding:4px 0}
+#websites .panel[open]>summary{padding-bottom:8px}
+#websites .panel h3{color:var(--fc-800)}
+#websites button{background:var(--fc-700);color:#fff}
+#websites button:hover{background:var(--fc-800)}
+#websites button.ghost{background:#fff;color:var(--fc-700);border:1px solid var(--fc-200)}
+#websites button.ghost:hover{background:var(--fc-50);border-color:var(--fc-500)}
+#websites input:focus,#websites select:focus,#websites textarea:focus,#websites button:focus-visible{
+ outline:2px solid var(--fc-700);outline-offset:2px}
+#websites textarea{background:var(--fc-50)}
+#websites a,#websites a.csv{color:var(--fc-700);font-weight:600}
+#websites th{border-bottom-color:var(--fc-700)}
+#websites .credits b{color:var(--fc-700)}
+#websites .live{background:var(--fc-50);border-color:var(--fc-200)}
+#websites .live.running .dot{background:var(--fc-600)}
+#websites .live .bar{background:var(--fc-100)}
+#websites .live .bar div{background:linear-gradient(90deg,var(--fc-600),var(--fc-500))}
+#websites .live.done .bar div{background:var(--fc-700)}
+#websites .live.done .dot{background:var(--fc-700)}
+#websites input[type=checkbox]{accent-color:var(--fc-700)}
+#websites .fbar .t{background:var(--fc-100)}
+@media (max-width:600px){.fbar{grid-template-columns:110px 1fr 58px;gap:8px;font-size:11.5px}}
+#websites .fbar .t div{background:linear-gradient(90deg,var(--fc-700),var(--fc-500))}
+#websites .empty{background:var(--fc-50);border-color:var(--fc-200)}
+.seg button#scope-firecrawl.on{background:#C2410C}
 .busy{background:#fff8e6;border:1px solid #f3dfae;color:#7a5200;border-radius:11px;
  padding:12px 16px;margin:26px 0 0;font-size:14px}
 .empty{background:var(--soft);border:1px dashed #dde2ea;border-radius:11px;padding:20px;
@@ -383,7 +438,10 @@ _ORIGIN = {"cli": "command line", "web": "web", "upload": "upload only", "trial"
            "derived": "built here"}
 
 
-def collection_html(limit: int = 25) -> str:
+SHOW_JOBS = 5      # newest jobs shown before "Show all"
+
+
+def collection_html(limit: int = 200) -> str:
     """Source | Status | Rows downloaded | Started | Last activity | Finished |
     GCS upload | Error — every machine's jobs, newest first.
 
@@ -403,15 +461,20 @@ def collection_html(limit: int = 25) -> str:
         trs = []
         for j in rows:
             try:
-                trs.append(_job_row(j))
+                row = _job_row(j)
             except Exception:  # noqa: BLE001 — a malformed row is skipped, not fatal
                 continue
+            # Beyond the newest SHOW_JOBS, rows wait behind "Show all" — except a
+            # job still running, which is always in view.
+            if len(trs) >= SHOW_JOBS and j.get("state") not in ("queued", "running", "stalled"):
+                row = row.replace("<tr>", '<tr class="more">', 1)
+            trs.append(row)
         body = ('<div class="scroll"><table><thead><tr><th class="l">Source</th>'
                 '<th class="l">Status</th><th>Rows downloaded</th><th>Started</th>'
                 '<th>Last activity</th><th>Finished</th><th class="l">GCS upload</th>'
                 '<th class="l">Error</th></tr></thead><tbody>'
                 + "".join(trs) + "</tbody></table></div>")
-    return f'<div id="jobs" data-active="{1 if active else 0}">{body}</div>'
+    return f'<div id="jobs" data-active="{1 if active else 0}" data-total="{len(trs) if rows else 0}">{body}</div>'
 
 
 def _job_row(j: dict) -> str:
@@ -634,9 +697,33 @@ CRAWL_JS = """<script>
       $('crawl-limit').value = cfg.default_batch; estimate();
       var res = d.results || {columns: [], rows: []}, box = $('crawl-results'); box.textContent = '';
       if (!res.rows.length) { box.appendChild(el('div', 'No results yet.', 'empty')); return; }
-      var t = el('table'), hr = el('tr'); res.columns.forEach(function (c) { hr.appendChild(el('th', c.replace(/_/g, ' '), 'l')); });
+      box.appendChild(el('p', 'The latest ' + res.rows.length + ' of ' + (res.total || res.rows.length).toLocaleString() +
+        ' businesses read. The CSV has all of them.', 'note'));
+      // A compact preview: the key columns, long text cut short (full text on hover).
+      // Every column, untrimmed, is in the CSV.
+      // name + neighbourhood, then the 3 requirement fields most often filled in
+      // these rows (so the preview follows whatever the requirements are), then the date.
+      var skip = {name: 1, nta2020: 1, category: 1, pages_read: 1, evidence: 1, changed_since_last_read: 1, fetched_at: 1};
+      var scored = res.columns.map(function (c, i) {
+        return {i: i, n: skip[c] ? -1 : res.rows.filter(function (r) { return r[i] != null && r[i] !== ''; }).length};
+      }).filter(function (x) { return x.n > 0; }).sort(function (a, b) { return b.n - a.n || a.i - b.i; }).slice(0, 3)
+        .sort(function (a, b) { return a.i - b.i; }).map(function (x) { return x.i; });
+      var idx = [res.columns.indexOf('name'), res.columns.indexOf('nta2020')].concat(scored, [res.columns.indexOf('fetched_at')])
+        .filter(function (i) { return i >= 0; });
+      var t = el('table', null, 'preview'), hr = el('tr');
+      idx.forEach(function (i) { hr.appendChild(el('th', res.columns[i].replace(/_/g, ' '), 'l')); });
       var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
-      res.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
+      res.rows.forEach(function (r) {
+        var tr = el('tr');
+        idx.forEach(function (i) {
+          var v = r[i] == null ? '' : String(r[i]);
+          if (res.columns[i] === 'fetched_at') v = v.slice(0, 10);
+          var td = el('td', v, 'l');
+          if (v) td.title = v;            // the cell may be cut by CSS: the full text is on hover
+          tr.appendChild(td);
+        });
+        tb.appendChild(tr);
+      });
       t.appendChild(tb); box.appendChild(t);
     }).catch(function (e) { msg(e.message); });
   }
@@ -740,6 +827,29 @@ CRAWL_JS = """<script>
       var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'queens_web_facts.csv'; a.click();
     }).catch(function (e) { msg(e.message); });
   };
+})();
+</script>"""
+
+
+JOBS_JS = r"""<script>
+/* Collection: the newest 5 rows, "Show all" for the rest. The toggle lives
+   outside the auto-refreshed table, and the class sits on the section, so a
+   refresh never collapses what you opened. */
+(function () {
+  var sec = document.getElementById('collection'), btn = document.getElementById('jobs-toggle');
+  if (!sec || !btn) return;
+  function label() {
+    var box = document.getElementById('jobs');
+    var total = box ? parseInt(box.getAttribute('data-total') || '0', 10) : 0;
+    var more = box ? box.querySelectorAll('tr.more').length : 0;
+    btn.hidden = more === 0;
+    var open = sec.classList.contains('show-all');
+    btn.textContent = open ? 'Show the latest 5' : 'Show all ' + total;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  btn.onclick = function () { sec.classList.toggle('show-all'); label(); };
+  new MutationObserver(label).observe(sec, {childList: true});
+  label();
 })();
 </script>"""
 
@@ -987,17 +1097,20 @@ def render(sql: str = "", result: str = "") -> str:
     <h2>Sources</h2>
     <p class="note">All {len(S.ALL)} are <b>free and public</b> — city, state and federal records.
       Nothing is bought, and nothing here trains BizGenome's model. A green dot means loaded.</p>
-    {src_table}
+    <div class="scroll">{src_table}</div>
     <p class="note" style="margin-top:14px">Pull on a laptop with <code>python fetch.py</code>;
       the results reach this page through the bucket.</p>
   </section>
 
   <section id="websites">
-    <h2>Business websites</h2>
-    <p class="note">Every Queens business that lists a website, checked for free: still alive, dead
-      (domain gone — often a closure), parked or for sale, taken over by spam, or really a platform
-      page. Then <b>Firecrawl</b> reads the alive ones for the facts set in the requirements.
-      Research only — kept apart from the public records.</p>
+    <div class="fc-hero">
+      <span class="fc-tag">Firecrawl</span>
+      <h2>Business websites</h2>
+      <p class="note">Every Queens business that lists a website, checked for free: still alive, dead
+        (domain gone — often a closure), parked or for sale, taken over by spam, or really a platform
+        page. Then <b>Firecrawl</b> reads the alive ones for the facts set in the requirements.
+        Research only — kept apart from the public records.</p>
+    </div>
     <div id="crawl-overview" class="empty">Loading…</div>
     <details class="defs" id="crawl-canpull"><summary>What the scraper can pull</summary><ul></ul></details>
     <details class="panel" id="crawl-panel"><summary>Control panel</summary>
@@ -1052,7 +1165,8 @@ def render(sql: str = "", result: str = "") -> str:
         <div id="stat-fields"></div>
         <p class="note">To search this data, use the <a href="#query">Query</a> section with
           <b>Firecrawl data</b> or <b>Mixed</b> selected.</p>
-        <h3>Latest results <a href="#" id="crawl-csv">download CSV</a></h3>
+        <div class="pnl-row"><h3 style="margin:0">Latest results</h3>
+          <button type="button" id="crawl-csv" class="ghost">Download all as CSV</button></div>
         <div class="scroll" id="crawl-results"></div>
       </div>
     </details>
@@ -1065,6 +1179,7 @@ def render(sql: str = "", result: str = "") -> str:
       column says separately whether they reached the bucket. A job that stops without
       reporting is marked as such, never left looking like a success.</p>
     {collection_html()}
+    <button type="button" class="ghost toggle" id="jobs-toggle">Show all</button>
   </section>
 
   <section id="query">
@@ -1081,7 +1196,7 @@ def render(sql: str = "", result: str = "") -> str:
     <p class="note">Ask: Claude writes the SQL, it runs on the selected data, and you see both
       (needs the control panel password — it uses Anthropic credits). Or write SQL yourself below.</p>
     <div class="pnl-row" id="q-examples"></div>
-    <textarea id="sql-box" rows="4"
+    <textarea id="sql-box" rows="5"
       placeholder="SELECT name, restaurants_per_10k FROM nta_profile ORDER BY 2 DESC LIMIT 10">{html.escape(sql)}</textarea>
     <div class="pnl-row"><button type="button" id="q-run">Run query</button>
       <a href="#" id="q-csv" hidden>download this result as CSV</a>
@@ -1095,6 +1210,7 @@ def render(sql: str = "", result: str = "") -> str:
   </footer>
 </div>
 {NB_JS}
+{JOBS_JS}
 {CRAWL_JS}
 {QUERY_JS}
 <script>
@@ -1262,14 +1378,17 @@ def crawl_admin(request: Request):
         except Exception as e:  # noqa: BLE001
             cr = {"error": jobs.clean(str(e))}
         c = ck.config()
-        cols, rows = ck.results(50)
+        cols, rows = ck.results(100_000)
+        total = len(rows)
+        rows = rows[:5]
         ok = ck.CRAWLABLE if c.get("include_blocked") else ("alive", "alive_js")
         waiting = ck.query(f"""SELECT count(DISTINCT domain) FROM site_checks
                                WHERE status IN {ok}""")[0][0]
         return {"credits": cr, "config": c, "credits_per_page": ck.CREDITS,
                 "field_types": list(ck.FIELD_TYPES), "crawlable_sites": waiting,
                 "runs": [{k: v for k, v in r.items() if k != "urls"} for r in ck.runs()][-10:],
-                "results": {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows]}}
+                "results": {"columns": cols, "total": total,
+                            "rows": [[None if v is None else str(v) for v in r] for r in rows]}}
     return _crawl_call(build)
 
 
