@@ -96,6 +96,11 @@ result and the error. Shown on the page (Collection), at `/api/jobs`, and by
    bucket so the laptop and the server share them. Structured mode costs 5
    credits a page, text mode 1.
 
+The control panel also has a **private Query box**: `web_latest` (one row per business,
+a typed column per field), `web_facts` (every page, with its full text), `site_checks`, and every
+public table as `q.<table>` — read-only, 500 rows, with clickable examples and CSV download.
+Structured runs keep each page's full text too (no extra credits).
+
 The control panel (Websites → Control panel) needs the password in `FETCH_TOKEN`
 and `FIRECRAWL_API_KEY`, both in Render's Environment tab. Results stay in
 `scraped/` — research only, never committed, never merged into BizGenome.

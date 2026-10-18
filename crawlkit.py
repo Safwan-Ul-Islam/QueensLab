@@ -535,8 +535,11 @@ def candidates(limit: int, c: dict) -> list[tuple]:
 
 
 def _submit(urls: list[str], c: dict) -> dict:
+    # Structured mode keeps the page text too: markdown is the base read Firecrawl
+    # bills anyway, so it costs nothing extra and lets pages be re-analysed later
+    # without paying to read them again.
     formats = (["markdown"] if c["mode"] == "text" else
-               [{"type": "json", "schema": schema(c), "prompt": c["prompt"]}])
+               [{"type": "json", "schema": schema(c), "prompt": c["prompt"]}, "markdown"])
     r = _api("POST", "/batch/scrape", {"urls": urls, "formats": formats, "onlyMainContent": True,
                                        "ignoreInvalidURLs": True, "timeout": 30000})
     if not r.get("id"):
@@ -694,7 +697,7 @@ def _collect(run: dict, first: dict) -> int:
             rows.append([run["run_id"], pid, name, cat, nta, url, meta.get("url"), meta.get("statusCode"),
                          (meta.get("title") or "")[:300], run["mode"],
                          json.dumps(facts) if facts is not None else None,
-                         md[:20_000] if md else None, meta.get("error"), now,
+                         md[:60_000] if md else None, meta.get("error"), now,
                          run.get("parent") or run["run_id"], run.get("kind") or "home"])
         nxt = page.get("next")
         if not nxt:
@@ -869,6 +872,99 @@ def progress() -> dict:
             "active": {k: a.get(k) for k in ("run_id", "kind", "status", "n", "completed", "credits_used",
                                              "credits_est", "started", "expires_at")} if a else None,
             "stats": stats()}
+
+
+_SQL_TYPES = {"text": "VARCHAR", "number": "DOUBLE", "yes/no": "BOOLEAN", "list": "VARCHAR[]",
+              "prices": "JSON"}
+
+
+def analysis_db():
+    """An in-memory DuckDB for the control panel's private Query box:
+
+        web_latest   one row per business (latest read, linked pages merged),
+                     one column per requirement field, typed
+        web_facts    every page read (facts JSON, page text, evidence, status)
+        site_checks  the free website check, one row per business
+        q.<table>    every public table (q.nta_profile, q.overture_places, ...)
+
+    Built fresh per query from the stored files, then locked down like the
+    public box (no files, no web), so a query can only read these tables."""
+    import duckdb
+    c = config()
+    fields = [f for f in c["fields"] if f["name"] != LINKS_FIELD]
+    con = duckdb.connect()
+    con.execute("SET enable_progress_bar=false")
+    for name, cols in (("web_facts", FACT_COLS), ("site_checks", SITE_COLS)):
+        f = local_table(name)
+        if f:
+            con.execute(f"CREATE TABLE {name} AS SELECT * FROM read_parquet({_q(f)}, union_by_name=true)")
+        else:
+            con.execute(f"CREATE TABLE {name} (" + ", ".join(f'"{n}" {t}' for n, t in cols) + ")")
+    cols = [("place_id", "VARCHAR"), ("name", "VARCHAR"), ("category", "VARCHAR"), ("nta2020", "VARCHAR"),
+            ("pages_read", "VARCHAR")] + [(f["name"], _SQL_TYPES[f["type"]]) for f in fields] + \
+           [("evidence", "JSON"), ("changed_since_last_read", "VARCHAR[]"), ("reads", "INTEGER"),
+            ("fetched_at", "TIMESTAMP")]
+    con.execute("CREATE TABLE web_latest (" + ", ".join(f'"{n}" {t}' for n, t in cols) + ")")
+    rows = []
+    for pid, vs in _visits().items():
+        last, prev = vs[-1], (vs[-2] if len(vs) > 1 else None)
+        vals = []
+        for f in fields:
+            v = last["facts"].get(f["name"])
+            if _empty(v):
+                vals.append(None)
+            elif f["type"] == "number":
+                try:
+                    vals.append(float(v))
+                except (TypeError, ValueError):
+                    vals.append(None)
+            elif f["type"] == "yes/no":
+                vals.append(bool(v) if isinstance(v, bool) else str(v).lower() in ("true", "yes"))
+            elif f["type"] == "list":
+                vals.append([str(x) for x in v] if isinstance(v, list) else [str(v)])
+            elif f["type"] == "prices":
+                vals.append(json.dumps(v))
+            else:
+                vals.append(str(v))
+        changed = [f["name"] for f in fields if prev is not None
+                   and _show(last["facts"].get(f["name"])) != _show(prev["facts"].get(f["name"]))]
+        rows.append([pid, last["name"], last["category"], last["nta2020"], " | ".join(last["pages"]),
+                     *vals, json.dumps(last["evidence"]), changed or None, len(vs), last["at"]])
+    if rows:
+        con.executemany(f"INSERT INTO web_latest VALUES ({', '.join('?' * len(cols))})", rows)
+    if DB.exists():
+        con.execute(f"ATTACH {_q(DB)} AS q (READ_ONLY)")
+    if gcs.enabled():
+        gcs.attach(con)                   # the public big tables are views over the bucket
+    for stmt in ("SET memory_limit='300MB'", "SET threads=2",
+                 "SET disabled_filesystems='LocalFileSystem,HTTPFileSystem'",
+                 "SET lock_configuration=true"):
+        con.execute(stmt)
+    return con
+
+
+ANALYSIS_EXAMPLES = [
+    ("Businesses and their facts",
+     "SELECT name, nta2020, business_type, opening_hours, price_level, services_or_products\n"
+     "FROM web_latest ORDER BY fetched_at DESC LIMIT 50"),
+    ("Open late, by neighbourhood",
+     "SELECT n.name AS neighbourhood, count(*) AS open_late\nFROM web_latest w "
+     "JOIN q.nta_profile n ON n.code = w.nta2020\nWHERE w.open_late GROUP BY 1 ORDER BY 2 DESC"),
+    ("Every price found",
+     "SELECT w.name, p.item, p.price, p.currency, p.unit\nFROM web_latest w, "
+     "unnest(from_json(w.prices, '[{\"item\":\"VARCHAR\",\"price\":\"DOUBLE\",\"currency\":\"VARCHAR\",\"unit\":\"VARCHAR\"}]')) t(p)\n"
+     "ORDER BY p.price DESC"),
+    ("Dead websites by neighbourhood",
+     "SELECT ntaname, count(*) AS sites,\n  count(*) FILTER (WHERE status IN ('dead','parked','hijacked')) AS gone,\n"
+     "  round(100.0 * gone / sites, 1) AS pct_gone\nFROM site_checks GROUP BY 1 HAVING sites >= 30 ORDER BY pct_gone DESC"),
+    ("Hiring or opening soon",
+     "SELECT name, nta2020, now_hiring, opening_soon_notice FROM web_latest\n"
+     "WHERE now_hiring OR opening_soon_notice IS NOT NULL"),
+    ("What changed since the last read",
+     "SELECT name, changed_since_last_read, reads FROM web_latest\nWHERE changed_since_last_read IS NOT NULL"),
+    ("Search the page text",
+     "SELECT name, url FROM web_facts\nWHERE markdown ILIKE '%halal%' LIMIT 50"),
+]
 
 
 def overview() -> dict:

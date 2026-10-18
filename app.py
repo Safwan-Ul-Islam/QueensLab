@@ -307,7 +307,9 @@ td.l,th.l{text-align:left}
 .panel .blk{display:block}
 .cfg input,.cfg select{width:100%}
 .cfg td{padding:4px 6px 4px 0}
-#crawl-results td{white-space:normal;min-width:110px;font-size:12.5px}
+#crawl-results td,#aq-result td{white-space:normal;min-width:110px;font-size:12.5px}
+#aq-sql{margin-top:6px}
+#aq-examples button{font-weight:500}
 .credits{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;font-size:13.5px}
 .credits b{font-size:15px}
 .credits .bad{color:#b42318;font-weight:600}
@@ -689,11 +691,11 @@ CRAWL_JS = """<script>
   function act(p, method, path, body, done) {
     msg(p); api(method, path, body).then(function (r) { msg(done || 'Done.'); load(); live(); }).catch(function (e) { msg(e.message); });
   }
-  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); };
+  $('crawl-unlock').onclick = function () { token = $('crawl-token').value || token; load(); live(); loadExamples(); };
   if (token) { $('crawl-token').value = token; }
   // A remembered password: opening the panel loads it, no Unlock press needed.
   $('crawl-panel').addEventListener('toggle', function () {
-    if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); }
+    if ($('crawl-panel').open && token && $('crawl-admin').hidden) { load(); live(); loadExamples(); }
   });
   $('crawl-limit').oninput = estimate; $('cfg-mode').onchange = estimate; $('cfg-follow').oninput = estimate;
   $('crawl-start').onclick = function () {
@@ -720,6 +722,38 @@ CRAWL_JS = """<script>
       include_blocked: $('cfg-blocked').checked, evidence: $('cfg-evidence').checked,
       follow_links: parseInt($('cfg-follow').value || '0', 10),
       filters: {categories: split($('cfg-cats').value), ntas: split($('cfg-ntas').value), min_confidence: parseFloat($('cfg-conf').value)}}, 'Saved.');
+  };
+  // ── the private Query box ──
+  var aqLast = null;
+  function loadExamples() {
+    api('GET', '/api/crawl/examples').then(function (d) {
+      var box = $('aq-examples'); box.textContent = '';
+      (d.examples || []).forEach(function (x) {
+        var b = el('button', x[0], 'ghost'); b.type = 'button';
+        b.onclick = function () { $('aq-sql').value = x[1]; };
+        box.appendChild(b);
+      });
+    }).catch(function () {});
+  }
+  $('aq-run').onclick = function () {
+    var sql = $('aq-sql').value.trim(); if (!sql) return;
+    $('aq-msg').textContent = 'Running…'; $('aq-csv').hidden = true;
+    api('POST', '/api/crawl/query', {sql: sql}).then(function (d) {
+      aqLast = d; var box = $('aq-result'); box.textContent = '';
+      $('aq-msg').textContent = d.rows.length + ' row(s)' + (d.truncated ? ' · capped at 500' : '');
+      if (!d.rows.length) { box.appendChild(el('div', 'No rows.', 'empty')); return; }
+      var t = el('table'), hr = el('tr'); d.columns.forEach(function (c) { hr.appendChild(el('th', c, 'l')); });
+      var th = el('thead'); th.appendChild(hr); t.appendChild(th); var tb = el('tbody');
+      d.rows.forEach(function (r) { var tr = el('tr'); r.forEach(function (v) { tr.appendChild(el('td', v == null ? '' : v, 'l')); }); tb.appendChild(tr); });
+      t.appendChild(tb); box.appendChild(t); $('aq-csv').hidden = false;
+    }).catch(function (e) { $('aq-msg').textContent = e.message; });
+  };
+  $('aq-csv').onclick = function (ev) {
+    ev.preventDefault(); if (!aqLast) return;
+    var q = function (v) { v = v == null ? '' : String(v); return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var csv = [aqLast.columns.map(q).join(',')].concat(aqLast.rows.map(function (r) { return r.map(q).join(','); })).join('\\n');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
+    a.download = 'queens_query.csv'; a.click();
   };
   $('crawl-csv').onclick = function (ev) {
     ev.preventDefault();
@@ -923,6 +957,18 @@ def render(sql: str = "", result: str = "") -> str:
         <div class="stats" id="stat-totals"></div>
         <p class="note" id="stat-last"></p>
         <div id="stat-fields"></div>
+        <h3>Query the website data</h3>
+        <p class="note">Tables: <code>web_latest</code> (one row per business, a column per field),
+          <code>web_facts</code> (every page read, with its full text in <code>markdown</code>),
+          <code>site_checks</code> (the free website check), and every public table as
+          <code>q.&lt;table&gt;</code> (e.g. <code>q.nta_profile</code>, <code>q.overture_places</code>).
+          Read-only; results cap at 500 rows.</p>
+        <div class="pnl-row" id="aq-examples"></div>
+        <textarea id="aq-sql" rows="5" placeholder="SELECT name, opening_hours FROM web_latest LIMIT 20"></textarea>
+        <div class="pnl-row"><button type="button" id="aq-run">Run query</button>
+          <a href="#" id="aq-csv" hidden>download this result as CSV</a>
+          <span class="muted" id="aq-msg"></span></div>
+        <div class="scroll" id="aq-result"></div>
         <h3>Latest results <a href="#" id="crawl-csv">download CSV</a></h3>
         <div class="scroll" id="crawl-results"></div>
       </div>
@@ -1128,6 +1174,50 @@ def crawl_progress(request: Request):
     if denied:
         return denied
     return _crawl_call(lambda: _ck().progress())
+
+
+@app.post("/api/crawl/query")
+async def crawl_query(request: Request):
+    """The control panel's private Query box: website data + public tables.
+    Same rules as the public box — one SELECT, no files, no web, capped."""
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    body = await request.json()
+    sql = str(body.get("sql") or "").strip().rstrip(";")
+    why = _one_read(sql) if sql else "Write a query first."
+    if why:
+        return JSONResponse({"error": why}, status_code=400)
+
+    def run():
+        con = _ck().analysis_db()
+        timer = threading.Timer(QUERY_SECONDS, con.interrupt)
+        timer.start()
+        try:
+            cur = con.execute(sql)
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchmany(501)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if "INTERRUPT" in msg.upper():
+                msg = f"Stopped after {QUERY_SECONDS} seconds. Try a narrower query."
+            raise ValueError(msg[:300]) from None
+        finally:
+            timer.cancel()
+            con.close()
+        return {"columns": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows[:500]],
+                "truncated": len(rows) > 500}
+    return _crawl_call(run)
+
+
+@app.get("/api/crawl/examples")
+def crawl_examples(request: Request):
+    denied = _admin_error(request)
+    if denied:
+        return denied
+    ck = _ck()
+    return {"examples": ck.ANALYSIS_EXAMPLES,
+            "fields": [f["name"] for f in ck.config()["fields"] if f["name"] != ck.LINKS_FIELD]}
 
 
 @app.post("/api/crawl/config")
